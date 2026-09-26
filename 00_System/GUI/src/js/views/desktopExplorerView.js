@@ -1615,10 +1615,12 @@ export async function renderDesktopExplorer(container, initialPath = "") {
       { name: "Downloads", path: "Downloads" },
       { name: "Desktop", path: "Desktop" },
       { name: "Documents", path: "Documents" },
-      ...(configData?.external_mounts?.map(m => ({ name: m.name, path: m.path })) || [
-        { name: "Drive (D:)", path: "D:\\" },
-        { name: "Drive (E:)", path: "E:\\" }
-      ])
+      ...(configData?.config?.external_mounts?.length
+        ? configData.config.external_mounts.map(m => ({ name: m.name, path: m.path }))
+        : [
+          { name: "Drive (D:)", path: "D:\\" },
+          { name: "Drive (E:)", path: "E:\\" }
+        ])
     ];
 
     const projectsRoot = configData?.paths?.projects_path?.path || configData?.config?.projects_path || "";

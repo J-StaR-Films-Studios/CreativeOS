@@ -245,6 +245,13 @@ export async function renderSettings(container) {
     });
   }
 
+  document.getElementById("toggle-edit-paths-btn")?.addEventListener("click", () => {
+    isEditingPaths = !isEditingPaths;
+    const btnText = document.getElementById("edit-paths-btn-text");
+    if (btnText) btnText.textContent = isEditingPaths ? "Cancel Edit" : "Edit Paths";
+    renderPaths(currentConfigData);
+  });
+
   let isAddingMount = false;
 
   function renderMounts(configData) {
@@ -503,6 +510,10 @@ export async function renderSettings(container) {
 
     categoriesContainer.querySelector(".btn-toggle-cat")?.addEventListener("click", async () => {
       const isEnabled = currentCat.enabled !== false;
+      if (isEnabled && Object.values(categories).filter(cat => cat.enabled !== false).length <= 1) {
+        showToast("Keep at least one project category enabled", "warning");
+        return;
+      }
       categories[selectedCategoryKey].enabled = !isEnabled;
       try {
         await api.updateCategories(categories);
