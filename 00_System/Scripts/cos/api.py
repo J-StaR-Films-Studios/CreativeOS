@@ -1523,7 +1523,11 @@ def delete_filesystem_item(req: DeletePathRequest) -> dict[str, Any]:
             recycled = True
         else:
             if is_dir:
-                robust_rmtree(path_str)
+                if not robust_rmtree(path_str):
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=f"Could not completely delete directory: {path_str}",
+                    )
             else:
                 os.remove(path_str)
 

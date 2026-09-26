@@ -510,16 +510,21 @@ export async function renderSettings(container) {
 
     categoriesContainer.querySelector(".btn-toggle-cat")?.addEventListener("click", async () => {
       const isEnabled = currentCat.enabled !== false;
-      if (isEnabled && Object.values(categories).filter(cat => cat.enabled !== false).length <= 1) {
+      const remaining = Object.keys(categories).filter(key => key !== selectedCategoryKey && categories[key].enabled !== false);
+      if (isEnabled && remaining.length === 0) {
         showToast("Keep at least one project category enabled", "warning");
         return;
       }
+      const defaultCategory = isEnabled && selectedCategoryKey === catData.default_category
+        ? remaining[0]
+        : catData.default_category;
       categories[selectedCategoryKey].enabled = !isEnabled;
       try {
-        await api.updateCategories(categories);
+        await api.updateCategories(categories, defaultCategory);
         showToast(`${selectedCategoryKey} category ${!isEnabled ? 'enabled' : 'disabled'}`, "success");
-        renderCategories({ categories });
+        renderCategories({ ...catData, categories, default_category: defaultCategory });
       } catch (err) {
+        categories[selectedCategoryKey].enabled = isEnabled;
         showToast(`Failed to update category: ${err.message}`, "error");
       }
     });

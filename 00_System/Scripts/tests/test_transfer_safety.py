@@ -88,3 +88,20 @@ def test_music_category_browses_projects_music(tmp_path, monkeypatch):
     listing = api.list_fs("Music")
 
     assert listing["current_path"] == str(music.resolve())
+
+
+def test_failed_permanent_directory_delete_does_not_update_index(tmp_path, monkeypatch):
+    projects = tmp_path / "projects"
+    target = projects / "Film"
+    target.mkdir(parents=True)
+    monkeypatch.setattr(api, "_get_allowed_roots", lambda: [projects.resolve()])
+    monkeypatch.setattr(api, "robust_rmtree", lambda _path: False)
+    removed = []
+    monkeypatch.setattr(api, "remove_project_from_storage_index", lambda path: removed.append(path))
+
+    with pytest.raises(HTTPException) as error:
+        api.delete_filesystem_item(api.DeletePathRequest(path=str(target), permanent=True))
+
+    assert error.value.status_code == 500
+    assert target.exists()
+    assert removed == []

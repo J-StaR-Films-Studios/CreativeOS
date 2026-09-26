@@ -1062,6 +1062,12 @@ export async function renderDesktopExplorer(container, initialPath = "") {
             try {
               await api.resurrectProject(projName);
               showToast(`Project '${projName}' resurrected to active workspace!`, "success");
+              try {
+                projectsList = await api.getProjects();
+                updateSidebarBadges();
+              } catch (err) {
+                console.warn("Could not refresh projects after resurrection:", err);
+              }
               loadArchiveData();
             } catch (err) {
               showToast(`Resurrect failed: ${err.message}`, "error");
