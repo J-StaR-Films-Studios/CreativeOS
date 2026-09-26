@@ -78,6 +78,21 @@ def test_adoption_outside_projects_root_rejected_before_writing(tmp_path, monkey
     assert not (external / "00_Notes").exists()
 
 
+def test_adoption_accepts_workspace_relative_project_path(tmp_path, monkeypatch):
+    projects = tmp_path / "projects"
+    target = projects / "Video" / "Existing"
+    target.mkdir(parents=True)
+    monkeypatch.setattr(api, "PROJECTS_PATH", str(projects))
+    monkeypatch.setattr(api, "_get_allowed_roots", lambda: [projects.resolve()])
+    monkeypatch.setattr(api, "update_project_in_storage_index", lambda *args, **kwargs: None)
+    monkeypatch.setattr(api, "_invalidate_server_cache", lambda: None)
+
+    result = api.init_project(api.InitProjectRequest(path=r"01_Projects\Video\Existing"))
+
+    assert result["path"] == str(target.resolve())
+    assert (target / ".project_meta.json").exists()
+
+
 def test_music_category_browses_projects_music(tmp_path, monkeypatch):
     projects = tmp_path / "projects"
     music = projects / "Music"

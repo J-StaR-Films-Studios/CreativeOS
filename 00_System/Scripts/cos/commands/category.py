@@ -124,6 +124,7 @@ def add_parser(subparsers: Any) -> None:
     p_edit.add_argument("--template", help="New template name")
     p_edit.add_argument("--folder", help="New physical folder name")
     p_edit.add_argument("--icon", help="New icon")
+    p_edit.add_argument("--description", help="New category description")
     p_edit.add_argument("--enable", dest="enabled", action="store_true", default=None, help="Enable category")
     p_edit.add_argument("--disable", dest="enabled", action="store_false", help="Disable category")
     p_edit.add_argument("--default", action="store_true", help="Set as default category")

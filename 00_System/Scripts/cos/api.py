@@ -724,7 +724,14 @@ def clone_project(req: CloneProjectRequest) -> dict[str, Any]:
 @app.post("/api/projects/init")
 def init_project(req: InitProjectRequest) -> dict[str, Any]:
     """Adopt an existing folder as a CreativeOS project."""
-    target_path = Path(req.path.strip()).resolve()
+    submitted = Path(req.path.strip())
+    if submitted.is_absolute():
+        target_path = submitted.resolve()
+    else:
+        relative = Path(req.path.strip().replace("\\", "/"))
+        if relative.parts and relative.parts[0].casefold() in ("01_projects", Path(PROJECTS_PATH).name.casefold()):
+            relative = Path(*relative.parts[1:])
+        target_path = (Path(PROJECTS_PATH) / relative).resolve()
     target_path = _check_path_allowed(target_path)
 
     if _is_allowed_root(target_path):

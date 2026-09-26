@@ -318,6 +318,10 @@ export async function renderDesktopExplorer(container, initialPath = "") {
             ${icons.columns}
             <span>RAID Ingest</span>
           </button>
+          <button class="win11-ribbon-btn ${viewMode === 'media' ? 'active' : ''}" id="win11-btn-view-media" title="Media Scrubber">
+            ${icons.video}
+            <span>Media Scrubber</span>
+          </button>
 
           <div class="win11-ribbon-sep"></div>
 
@@ -2537,12 +2541,13 @@ export async function renderDesktopExplorer(container, initialPath = "") {
       toggleText.textContent = isGrid ? 'Details' : 'Large Icons';
     }
     document.getElementById("win11-btn-view-split")?.classList.toggle("active", viewMode === "split");
+    document.getElementById("win11-btn-view-media")?.classList.toggle("active", viewMode === "media");
     document.getElementById("status-btn-view-details")?.classList.toggle("active", viewMode === "details");
     document.getElementById("status-btn-view-grid")?.classList.toggle("active", viewMode === "grid");
   }
 
   function setViewMode(newMode) {
-    const wasSplit = viewMode === "split";
+    const wasSpecial = viewMode === "split" || viewMode === "media";
     if (newMode !== "split" && newMode !== "media") {
       lastGlobalView = newMode;
       localStorage.setItem("cos_last_global_view", lastGlobalView);
@@ -2556,7 +2561,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
     updateViewButtons();
     if (newMode === "split") renderDualPaneView();
     else if (newMode === "media") renderMediaScrubberView();
-    else if (wasSplit) loadCurrentDirectory();
+    else if (wasSpecial) loadCurrentDirectory();
     else renderCanvasEntries();
   }
 
@@ -2576,6 +2581,10 @@ export async function renderDesktopExplorer(container, initialPath = "") {
     const prev = lastGlobalView === "split" ? "grid" : (lastGlobalView || "grid");
     const target = folderViewMap[getActiveTab().path];
     setViewMode(viewMode === "split" ? (target && target !== "split" ? target : prev) : "split");
+  });
+
+  document.getElementById("win11-btn-view-media")?.addEventListener("click", () => {
+    setViewMode(viewMode === "media" ? (lastGlobalView || "grid") : "media");
   });
 
   // Ribbon Active Project Action Handlers

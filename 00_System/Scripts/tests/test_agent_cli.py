@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from cos import cli
-from cos.commands import config_cmd, sync
+from cos.commands import category, config_cmd, sync
 
 
 installer_spec = importlib.util.spec_from_file_location(
@@ -56,6 +56,19 @@ def test_unattended_first_run_fails_without_prompt(monkeypatch):
     with pytest.raises(SystemExit) as exit_info:
         cli.main()
     assert exit_info.value.code == 1
+
+
+def test_category_edit_accepts_description_and_enable_flags(monkeypatch):
+    parser = argparse.ArgumentParser()
+    category.add_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(["category", "edit", "Video", "--disable", "--description", "Archived projects"])
+    saved = []
+    monkeypatch.setattr(category, "load_categories", lambda: {"categories": {"Video": {"enabled": True}}})
+    monkeypatch.setattr(category, "save_categories", lambda config: saved.append(config))
+
+    category.cmd_category_edit(args)
+
+    assert saved[0]["categories"]["Video"] == {"enabled": False, "description": "Archived projects"}
 
 
 def test_config_validation_failure_returns_error(tmp_path, monkeypatch):
