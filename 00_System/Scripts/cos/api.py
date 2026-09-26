@@ -732,6 +732,11 @@ def init_project(req: InitProjectRequest) -> dict[str, Any]:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot initialize a filesystem root as a project",
         )
+    if not target_path.is_relative_to(Path(PROJECTS_PATH).resolve()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Project folders must be inside the configured projects directory",
+        )
 
     if not target_path.exists() or not target_path.is_dir():
         raise HTTPException(
@@ -1161,8 +1166,6 @@ def list_fs(path: Optional[str] = None) -> dict[str, Any]:
             target_dir = (Path.home() / "Documents").resolve()
         elif p_lower == "videos":
             target_dir = (Path.home() / "Videos").resolve()
-        elif p_lower == "music":
-            target_dir = (Path.home() / "Music").resolve()
         elif p_lower == "pictures":
             target_dir = (Path.home() / "Pictures").resolve()
         elif p_lower in ("00_notes", "00-notes"):
@@ -1437,6 +1440,11 @@ def transfer_fs(req: TransferRequest) -> dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot transfer a directory into itself",
+        )
+    if req.move and req.overwrite and src_safe.is_dir() and final_dest.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot move onto an existing directory; choose copy with overwrite or another destination",
         )
 
     try:

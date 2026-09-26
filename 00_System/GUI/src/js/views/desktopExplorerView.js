@@ -194,7 +194,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
       api.getProjectsSWR((fresh) => { projectsList = fresh; updateSidebarBadges(); }),
       api.getStorageSWR((fresh) => { storageData = fresh; }),
       api.getConfigSWR((fresh) => { configData = fresh; }),
-      api.getCategoriesSWR((fresh) => { categoriesData = fresh.categories || {}; }),
+      api.getCategoriesSWR((fresh) => { categoriesData = fresh.categories || {}; renderSidebarCategories(); }),
     ]);
     projectsList = projs || [];
     storageData = storage || null;
@@ -843,7 +843,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
     const catsTree = document.getElementById("win11-categories-tree");
     if (!catsTree) return;
 
-    const cats = Object.keys(categoriesData).length ? Object.entries(categoriesData) : [
+    const cats = Object.keys(categoriesData).length ? Object.entries(categoriesData).filter(([, cat]) => cat.enabled !== false) : [
       ["Video", { name: "Video", icon: "video", physical_folder: "Video" }],
       ["Code", { name: "Code", icon: "code", physical_folder: "Code" }],
       ["Audio", { name: "Audio", icon: "audio", physical_folder: "Audio" }],
@@ -880,7 +880,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
     if (!drivesTree) return;
 
     let drivesList = [
-      { name: "Projects Root (C:)", path: "01_Projects" },
+      { name: "Projects Root (C:)", path: "" },
       { name: "Storage (D:)", path: "D:\\" },
       { name: "Media RAID (E:)", path: "E:\\" }
     ];
@@ -889,7 +889,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
       const res = await api.getDrives();
       if (res && Array.isArray(res.drives) && res.drives.length > 0) {
         drivesList = [
-          { name: "Projects Root (C:)", path: "01_Projects" },
+          { name: "Projects Root (C:)", path: "" },
           ...res.drives.filter(d => !d.is_system).map(d => ({ name: d.name, path: d.path })),
           ...(res.external_mounts || []).map(m => ({ name: m.name, path: m.path }))
         ];
@@ -918,7 +918,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
     const catCounts = { Clients: 0 };
     const clientSet = new Set();
 
-    const cats = Object.keys(categoriesData).length ? Object.keys(categoriesData) : ["Video", "Code", "Audio", "AI", "Design", "Photo"];
+    const cats = Object.keys(categoriesData).length ? Object.keys(categoriesData).filter(c => categoriesData[c].enabled !== false) : ["Video", "Code", "Audio", "AI", "Design", "Photo"];
     cats.forEach(c => { catCounts[c] = 0; });
 
     projectsList.forEach(p => {
@@ -1091,6 +1091,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
     const loadId = ++directoryLoadId;
     const tab = getActiveTab();
     if (!tab) return;
+    selectedItem = null;
     const tabId = tab.id;
     const targetPath = tab.path || "";
     const isStaleLoad = () => {
@@ -1265,7 +1266,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
         <div class="win11-empty-canvas">
           <div class="win11-empty-icon">${icons.folder}</div>
           <h3>${query ? 'No matching items found' : 'This folder is empty'}</h3>
-          <p>${query ? `No files matching "${query}" in this directory` : 'Create a new project or drop assets into this folder'}</p>
+          <p>${query ? `No files matching "${escapeHtml(query)}" in this directory` : 'Create a new project or drop assets into this folder'}</p>
         </div>
       `;
       return;
@@ -1628,7 +1629,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
     };
     const targetPresets = [
       { name: "Projects Root", path: projectDestination() },
-      ...(Object.keys(categoriesData).length ? Object.entries(categoriesData).map(([k, c]) => ({
+      ...(Object.keys(categoriesData).length ? Object.entries(categoriesData).filter(([, c]) => c.enabled !== false).map(([k, c]) => ({
         name: c.display_name || k,
         path: projectDestination(c.physical_folder || k)
       })) : [
@@ -2508,7 +2509,15 @@ export async function renderDesktopExplorer(container, initialPath = "") {
 
   // Ribbon Actions
   document.getElementById("win11-btn-new-project")?.addEventListener("click", () => {
-    openNewProjectModal(() => loadCurrentDirectory());
+    openNewProjectModal(async () => {
+      try {
+        projectsList = await api.getProjects();
+        updateSidebarBadges();
+      } catch (err) {
+        console.warn("Could not refresh projects after creation:", err);
+      }
+      loadCurrentDirectory();
+    });
   });
 
   function updateViewButtons() {
@@ -2525,6 +2534,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
   }
 
   function setViewMode(newMode) {
+    const wasSplit = viewMode === "split";
     if (newMode !== "split" && newMode !== "media") {
       lastGlobalView = newMode;
       localStorage.setItem("cos_last_global_view", lastGlobalView);
@@ -2538,6 +2548,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
     updateViewButtons();
     if (newMode === "split") renderDualPaneView();
     else if (newMode === "media") renderMediaScrubberView();
+    else if (wasSplit) loadCurrentDirectory();
     else renderCanvasEntries();
   }
 
@@ -2729,22 +2740,25 @@ export async function renderDesktopExplorer(container, initialPath = "") {
   // Keyboard Shortcuts (Delete Key for Selected File/Folder)
   document.addEventListener("keydown", (e) => {
     if (e.key === "Delete" && selectedItem && !e.target.closest("input, textarea, [contenteditable]")) {
+      if (viewMode !== "grid" && viewMode !== "details") return;
+      const item = selectedItem;
+      if (!currentEntries.some(entry => entry.path === item.path)) return;
       const activeModal = document.querySelector(".modal-backdrop.is-open, #resurrect-modal-backdrop, #bulk-reclaim-modal-container");
       if (activeModal) return;
       e.preventDefault();
-      const isDir = selectedItem.is_dir;
-      const isProj = projectsList.find(p => p.path === selectedItem.path || p.name === selectedItem.name || p.slug === selectedItem.name);
+      const isDir = item.is_dir;
+      const isProj = projectsList.find(p => p.path === item.path || p.name === item.name || p.slug === item.name);
       const itemType = isProj ? "Project" : (isDir ? "Folder" : "File");
       openConfirmModal({
         title: `Delete ${itemType}`,
-        message: `Are you sure you want to delete "${selectedItem.name}"?`,
+        message: `Are you sure you want to delete "${item.name}"?`,
         subtext: "This will move the item to the Windows Recycle Bin.",
         confirmText: "Delete",
         variant: "danger",
         onConfirm: async () => {
           try {
-            await api.deletePath(selectedItem.path);
-            showToast(`Moved '${selectedItem.name}' to Recycle Bin`, "info", 2000);
+            await api.deletePath(item.path);
+            showToast(`Moved '${item.name}' to Recycle Bin`, "info", 2000);
             loadCurrentDirectory();
             updateSidebarBadges();
           } catch (err) {
@@ -2757,6 +2771,10 @@ export async function renderDesktopExplorer(container, initialPath = "") {
 
   // Current Folder Live Filter
   searchInputEl?.addEventListener("input", () => {
+    if (viewMode !== "grid" && viewMode !== "details") return;
+    const path = getActiveTab()?.path;
+    if (["storage", "settings", "archive", "sys://storage", "sys://settings", "sys://archive"].includes(path)) return;
+    selectedItem = null;
     renderCanvasEntries();
   });
 

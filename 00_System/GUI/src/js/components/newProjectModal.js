@@ -43,6 +43,9 @@ export async function openNewProjectModal(onCreated = () => {}) {
   } catch (err) {
     console.warn("Could not load categories in modal:", err);
   }
+  const enabledCategories = Object.keys(categoriesData).length
+    ? Object.entries(categoriesData).filter(([, cfg]) => cfg.enabled !== false)
+    : [["Code", { description: "" }]];
 
   modalContainer.innerHTML = `
     <div class="modal-backdrop win11-modal-backdrop" id="new-project-modal-backdrop">
@@ -165,7 +168,7 @@ export async function openNewProjectModal(onCreated = () => {}) {
             <div class="win11-form-group">
               <label class="win11-label" for="m-proj-category">Category Blueprint</label>
               <select id="m-proj-category" class="win11-select">
-                ${Object.entries(categoriesData).map(([k, cfg]) => `
+                ${enabledCategories.map(([k, cfg]) => `
                   <option value="${escapeHtml(k)}" ${k === defaultCategory ? 'selected' : ''}>${escapeHtml(k)} — ${escapeHtml(cfg.description || '')}</option>
                 `).join("")}
               </select>
@@ -364,9 +367,8 @@ export async function openNewProjectModal(onCreated = () => {}) {
             <div class="win11-form-group">
               <label class="win11-label" for="m-clone-category">Category</label>
               <select id="m-clone-category" class="win11-select">
-                <option value="Code" selected>Code</option>
-                ${Object.keys(categoriesData).filter(k => k !== "Code").map(k => `
-                  <option value="${escapeHtml(k)}">${escapeHtml(k)}</option>
+                ${enabledCategories.map(([k]) => `
+                  <option value="${escapeHtml(k)}" ${k === "Code" ? 'selected' : ''}>${escapeHtml(k)}</option>
                 `).join("")}
               </select>
             </div>
@@ -445,7 +447,7 @@ export async function openNewProjectModal(onCreated = () => {}) {
             <div class="win11-form-group flex-1">
               <label class="win11-label" for="m-adopt-path">Existing Folder Path <span class="req">*</span></label>
               <input type="text" id="m-adopt-path" class="win11-input font-mono" placeholder="C:\\Projects\\MyExistingFolder or 01_Projects\\Video\\..." required autofocus />
-              <span class="win11-form-hint">Directory to adopt as a tracked CreativeOS project.</span>
+              <span class="win11-form-hint">Choose a folder inside your configured Projects directory.</span>
             </div>
           </div>
 
@@ -453,7 +455,7 @@ export async function openNewProjectModal(onCreated = () => {}) {
             <div class="win11-form-group">
               <label class="win11-label" for="m-adopt-category">Category</label>
               <select id="m-adopt-category" class="win11-select">
-                ${Object.keys(categoriesData).map(k => `
+                ${enabledCategories.map(([k]) => `
                   <option value="${escapeHtml(k)}" ${k === defaultCategory ? 'selected' : ''}>${escapeHtml(k)}</option>
                 `).join("")}
               </select>

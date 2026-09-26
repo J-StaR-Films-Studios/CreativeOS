@@ -317,10 +317,10 @@ export async function renderSettings(container) {
           <div class="path-item">
             <div class="path-meta">
               <div class="path-title-row">
-                <span class="path-name" style="color: var(--color-accent-cyan);">${m.name || m.path}</span>
+                <span class="path-name mount-label" style="color: var(--color-accent-cyan);"></span>
                 <span class="path-status status-ok">Configured</span>
               </div>
-              <span class="path-val font-mono">${m.path}</span>
+              <span class="path-val font-mono mount-path"></span>
             </div>
             <button class="icon-button remove-mount-btn" data-index="${idx}" title="Remove Mount" aria-label="Remove mount" style="color: var(--color-danger);">
               ${icons.x}
@@ -329,6 +329,11 @@ export async function renderSettings(container) {
         `).join("")}
       </div>
     `;
+
+    mountsContainer.querySelectorAll(".path-item").forEach((item, idx) => {
+      item.querySelector(".mount-label").textContent = mounts[idx].name || mounts[idx].path;
+      item.querySelector(".mount-path").textContent = mounts[idx].path;
+    });
 
     mountsContainer.querySelectorAll(".remove-mount-btn").forEach(btn => {
       btn.addEventListener("click", async () => {
