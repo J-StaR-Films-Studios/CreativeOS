@@ -1683,7 +1683,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
               </div>
               <div class="win11-pane-path-bar">
                 <button class="win11-nav-btn" id="dual-left-up-btn" title="Up to Parent">${icons.arrowUp}</button>
-                <input type="text" class="win11-pane-input font-mono" id="dual-left-path-inp" value="${dualLeftPath}" placeholder="Downloads, D:\\, E:\\..." />
+                <input type="text" class="win11-pane-input font-mono" id="dual-left-path-inp" value="${escapeHtml(dualLeftPath)}" placeholder="Downloads, D:\\, E:\\..." />
                 <button class="win11-nav-btn" id="dual-left-refresh-btn" title="Refresh Source">${icons.refresh}</button>
               </div>
             </div>
@@ -1707,7 +1707,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
               </div>
               <div class="win11-pane-path-bar">
                 <button class="win11-nav-btn" id="dual-right-up-btn" title="Up to Parent">${icons.arrowUp}</button>
-                <input type="text" class="win11-pane-input font-mono" id="dual-right-path-inp" value="${dualRightPath}" placeholder="01_Projects\\Video\\..." />
+                <input type="text" class="win11-pane-input font-mono" id="dual-right-path-inp" value="${escapeHtml(dualRightPath)}" placeholder="01_Projects\\Video\\..." />
                 <button class="win11-nav-btn" id="dual-right-refresh-btn" title="Refresh Destination">${icons.refresh}</button>
               </div>
             </div>
