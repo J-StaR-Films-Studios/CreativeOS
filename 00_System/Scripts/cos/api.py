@@ -2,53 +2,63 @@
 
 from __future__ import annotations
 
-import os
-import sys
-import time
-import json
-import shutil
+import argparse
 import datetime
-import threading
+import json
+import os
+import shutil
+import string
 import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
-from pydantic import BaseModel, Field
 
 from fastapi import FastAPI, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from . import __version__
-from .config import (
-    CONFIG_PATH,
-    PROJECTS_PATH,
-    ROOT_PATH,
-    TEMPLATES_PATH,
-    VAULT_PATH,
-    EXPORTS_PATH,
-    DOWNLOADS_PATH,
-    SHUTTLE_PATH,
-    ARCHIVE_PATH,
-    _load_config,
-    reload_config,
-    logger,
-)
 from .category_config import (
     get_categories,
-    get_enabled_categories,
+    get_category_folder,
     get_category_icon,
     get_default_category,
+    get_enabled_categories,
     get_simple_template,
+    resolve_category_name,
+)
+from .commands.new import create_project_structure
+from .commands.sync import run_sync, stream_sync
+from .config import (
+    ARCHIVE_PATH,
+    CONFIG_PATH,
+    DOWNLOADS_PATH,
+    EXPORTS_PATH,
+    PROJECTS_PATH,
+    ROOT_PATH,
+    SHUTTLE_PATH,
+    TEMPLATES_PATH,
+    VAULT_PATH,
+    _load_config,
+    logger,
+    reload_config,
+)
+from .file_utils import get_smart_date, robust_rmtree
+from .security import (
+    sanitize_path_input,
+    validate_client_name,
+    validate_git_url,
+    validate_path_component,
 )
 from .storage import (
     DEFAULT_STALE_DAYS,
     _created_date,
     _recalculate_totals,
-    build_storage_index,
     discover_projects,
     find_project_reclaimable_dirs,
-    inspect_project,
     load_storage_index,
     reclaim_bulk_space,
     reclaim_project_space,
@@ -60,26 +70,12 @@ from .storage import (
     stream_reclaim_project,
     update_project_in_storage_index,
 )
-from .security import sanitize_path_input, validate_client_name
-from .file_utils import robust_rmtree
-from .commands.new import create_project_structure
-from .commands.sync import run_sync, stream_sync
 
 app = FastAPI(
     title="CreativeOS API",
     description="Lightweight API backend for CreativeOS GUI",
     version=__version__,
 )
-
-# Enable CORS for local development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Security Helpers
@@ -98,12 +94,69 @@ def _get_allowed_roots() -> list[Path]:
         ARCHIVE_PATH,
     ]
     for p in candidates:
-        if p and isinstance(p, str):
+        if p and isinstance(p, (str, Path)):
             try:
                 roots.append(Path(p).resolve())
             except Exception:
                 pass
-    return roots
+
+    # Standard User Folders
+    user_home = Path.home()
+    user_candidates = [
+        user_home / "Desktop",
+        user_home / "Downloads",
+        user_home / "Documents",
+        user_home / "Videos",
+        user_home / "Music",
+        user_home / "Pictures",
+    ]
+    userprofile_env = os.environ.get("USERPROFILE")
+    if userprofile_env:
+        for folder_name in ["Desktop", "Downloads", "Documents", "Videos", "Music", "Pictures"]:
+            try:
+                user_candidates.append(Path(userprofile_env) / folder_name)
+            except Exception:
+                pass
+
+    for p in user_candidates:
+        try:
+            resolved = p.resolve()
+            if resolved.exists():
+                roots.append(resolved)
+        except Exception:
+            pass
+
+    # Non-system drives (e.g. D:\, E:\, etc., excluding system drive root C:\ to protect OS directories like C:\Windows)
+    system_drive = os.environ.get("SystemDrive", "C:").upper()
+    for letter in string.ascii_uppercase:
+        drive_str = f"{letter}:"
+        if drive_str != system_drive:
+            try:
+                drive = Path(f"{letter}:\\")
+                if drive.exists():
+                    roots.append(drive.resolve())
+            except Exception:
+                pass
+
+    # Configured External Storage Mounts
+    try:
+        raw_cfg = _load_config()
+        for m in raw_cfg.get("external_mounts", []):
+            if isinstance(m, dict) and "path" in m:
+                mp = Path(m["path"]).resolve()
+                if mp.exists():
+                    roots.append(mp)
+    except Exception:
+        pass
+
+    seen: set[Path] = set()
+    deduped_roots: list[Path] = []
+    for r in roots:
+        if r not in seen:
+            seen.add(r)
+            deduped_roots.append(r)
+
+    return deduped_roots
 
 
 def _check_path_allowed(target_path: str | Path) -> Path:
@@ -127,6 +180,18 @@ def _check_path_allowed(target_path: str | Path) -> Path:
             detail=f"Access denied: Target path is outside permitted workspace roots: {resolved}",
         )
     return resolved
+
+
+def _is_allowed_root(path: Path) -> bool:
+    """Return whether a path is one of the protected filesystem roots."""
+    resolved = path.resolve()
+    for root in _get_allowed_roots():
+        try:
+            if resolved == root.resolve():
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _find_project_dir(project_name: str, search_root: str | None = None) -> tuple[Path, dict[str, Any]]:
@@ -222,6 +287,20 @@ class CreateProjectRequest(BaseModel):
     git: bool = Field(default=False, description="Initialize Git repository")
 
 
+class CloneProjectRequest(BaseModel):
+    url: str = Field(..., description="Git repository URL")
+    category: str = Field(default="Code", description="Project category")
+    client: Optional[str] = Field(default=None, description="Optional client name")
+    name: Optional[str] = Field(default=None, description="Optional project name override")
+
+
+class InitProjectRequest(BaseModel):
+    path: str = Field(..., description="Target directory path to initialize as a project")
+    name: Optional[str] = Field(default=None, description="Optional project name override")
+    category: Optional[str] = Field(default=None, description="Optional project category")
+    client: Optional[str] = Field(default=None, description="Optional client name")
+
+
 class UpdatePathsRequest(BaseModel):
     paths: dict[str, str] = Field(..., description="Dictionary of path keys and new filesystem paths")
     move_files: bool = Field(default=False, description="Whether to migrate files to new location")
@@ -238,7 +317,6 @@ class UpdateProjectRequest(BaseModel):
     sync_filesystem: bool = Field(default=False, description="Rename or move the physical project folder on disk")
 
 
-
 class OpenPathRequest(BaseModel):
     path: Optional[str] = Field(default="", description="Path or project name to open with native OS handler")
 
@@ -252,6 +330,36 @@ class ReclaimBulkRequest(BaseModel):
     stale_only: bool = Field(default=False, description="Whether to restrict to stale projects (>90 days inactive)")
     days: int = Field(default=DEFAULT_STALE_DAYS, description="Threshold for stale inactivity in days")
     project_slugs: Optional[list[str]] = Field(default=None, description="Optional explicit list of project slugs or paths")
+
+
+class CleanDownloadsRequest(BaseModel):
+    folder: Optional[str] = Field(default=None, description="Optional target folder path to clean")
+
+
+class SortExportsRequest(BaseModel):
+    inbox_path: Optional[str] = Field(default=None, description="Optional custom inbox path")
+
+
+class TransferRequest(BaseModel):
+    source: str = Field(..., description="Source file or directory path")
+    destination: str = Field(..., description="Destination directory or target path")
+    move: bool = Field(default=False, description="Move if True, copy if False")
+    overwrite: bool = Field(default=False, description="Whether to overwrite existing destination files")
+
+
+class UpdateMountsRequest(BaseModel):
+    mounts: list[dict[str, Any]] = Field(..., description="List of external drive or directory mounts")
+
+
+class UpdateCategoriesRequest(BaseModel):
+    categories: dict[str, Any] = Field(..., description="Full categories configuration dictionary")
+    default_category: Optional[str] = Field(default=None, description="Default category name")
+
+
+class DeletePathRequest(BaseModel):
+    path: str = Field(..., description="Filesystem path of file or folder to delete")
+    permanent: bool = Field(default=False, description="If True, delete permanently without Recycle Bin")
+    recycle_bin: bool = Field(default=True, description="If True on Windows, move to Recycle Bin")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -450,6 +558,322 @@ def create_project(req: CreateProjectRequest) -> dict[str, Any]:
         ) from e
 
 
+@app.post("/api/projects/clone", status_code=status.HTTP_201_CREATED)
+def clone_project(req: CloneProjectRequest) -> dict[str, Any]:
+    """Clone an external Git repository into CreativeOS projects tree and adopt it."""
+    url = req.url.strip()
+    if not url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Repository URL cannot be empty",
+        )
+
+    # Derive repository / project name
+    if req.name and req.name.strip():
+        repo_name_raw = req.name.strip()
+    else:
+        clean_url = url.rstrip("/\\")
+        base_name = clean_url.split("/")[-1].split("\\")[-1]
+        if base_name.endswith(".git"):
+            base_name = base_name[:-4]
+        repo_name_raw = base_name
+
+    try:
+        repo_name = sanitize_path_input(repo_name_raw, max_length=100)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid repository/project name: {e}",
+        )
+
+    try:
+        url = validate_git_url(url)
+        category = resolve_category_name(req.category or "Code")
+        category_config = get_enabled_categories().get(category)
+        if category_config is None:
+            raise ValueError(f"Unknown or disabled category: {req.category}")
+        phys_cat = validate_path_component(
+            str(category_config.get("physical_folder") or get_category_folder(category)),
+            max_length=100,
+        )
+
+        if req.client and req.client.strip() and req.client.strip().lower() not in ("none", "internal"):
+            client_clean = validate_client_name(req.client.strip())
+            target_parent = Path(PROJECTS_PATH) / "Clients" / client_clean
+        else:
+            target_parent = Path(PROJECTS_PATH) / phys_cat
+    except (ValueError, argparse.ArgumentTypeError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+
+    projects_root = Path(PROJECTS_PATH).resolve()
+    dest_resolved = (target_parent / repo_name).resolve()
+    if not dest_resolved.is_relative_to(projects_root):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Clone destination must remain inside the projects directory",
+        )
+
+    if dest_resolved.exists() and any(dest_resolved.iterdir()):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Target directory already exists and is not empty: {dest_resolved}",
+        )
+
+    dest_resolved.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        proc = subprocess.run(
+            ["git", "clone", "--", url, str(dest_resolved)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            err_msg = proc.stderr.strip() or proc.stdout.strip() or f"Process exited with code {proc.returncode}"
+            logger.error(f"Git clone failed: {err_msg}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Git clone failed: {err_msg}",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Git clone command failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Git clone execution error: {e}",
+        ) from e
+
+    # Create 00_Notes / Idea.md if not present
+    notes_dir = dest_resolved / "00_Notes"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    idea_file = notes_dir / "Idea.md"
+    date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    meta_client = req.client.strip() if req.client and req.client.strip().lower() not in ("none", "internal") else "None"
+
+    if not idea_file.exists():
+        try:
+            with open(idea_file, "w", encoding="utf-8") as f:
+                f.write(
+                    f"---\n"
+                    f"type: project\n"
+                    f"category: {category}\n"
+                    f"client: {meta_client}\n"
+                    f"status: active\n"
+                    f"created: {date_str}\n"
+                    f"tags: [creativeos, git]\n"
+                    f"---\n\n"
+                    f"# {repo_name}\n\n"
+                    f"Type: Cloned Repository\n"
+                    f"Source: {url}\n"
+                    f"Date: {date_str}\n"
+                )
+        except Exception as e:
+            logger.warning(f"Could not create Idea.md: {e}")
+
+    # Create .project_meta.json if not present
+    meta_file = dest_resolved / ".project_meta.json"
+    if not meta_file.exists():
+        meta = {
+            "name": repo_name,
+            "slug": repo_name,
+            "type": category,
+            "created": date_str,
+            "client": meta_client,
+            "template": "git_clone",
+            "repo_url": url,
+            "root": str(dest_resolved),
+            "status": "active",
+            "last_updated": datetime.datetime.now().isoformat(),
+        }
+        try:
+            with open(meta_file, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=4)
+        except Exception as e:
+            logger.warning(f"Could not create .project_meta.json: {e}")
+    else:
+        try:
+            with open(meta_file, "r", encoding="utf-8-sig") as f:
+                meta = json.load(f)
+        except Exception:
+            meta = {
+                "name": repo_name,
+                "slug": repo_name,
+                "type": category,
+                "root": str(dest_resolved),
+            }
+
+    try:
+        update_project_in_storage_index(dest_resolved, metadata=meta, projects_path=PROJECTS_PATH)
+    except Exception:
+        pass
+
+    _invalidate_server_cache()
+
+    return {
+        "status": "success",
+        "message": f"Cloned repository '{repo_name}' successfully",
+        "project": meta,
+        "path": str(dest_resolved),
+    }
+
+
+@app.post("/api/projects/init")
+def init_project(req: InitProjectRequest) -> dict[str, Any]:
+    """Adopt an existing folder as a CreativeOS project."""
+    submitted = Path(req.path.strip())
+    if submitted.is_absolute():
+        target_path = submitted.resolve()
+    else:
+        relative = Path(req.path.strip().replace("\\", "/"))
+        if relative.parts and relative.parts[0].casefold() in ("01_projects", Path(PROJECTS_PATH).name.casefold()):
+            relative = Path(*relative.parts[1:])
+        target_path = (Path(PROJECTS_PATH) / relative).resolve()
+    target_path = _check_path_allowed(target_path)
+
+    if _is_allowed_root(target_path):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot initialize a filesystem root as a project",
+        )
+    if not target_path.is_relative_to(Path(PROJECTS_PATH).resolve()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Project folders must be inside the configured projects directory",
+        )
+
+    if not target_path.exists() or not target_path.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Target directory does not exist or is not a directory: {req.path}",
+        )
+
+    meta_file = target_path / ".project_meta.json"
+    if meta_file.exists():
+        try:
+            with open(meta_file, "r", encoding="utf-8-sig") as f:
+                existing_meta = json.load(f)
+            return {
+                "status": "success",
+                "message": f"Folder is already an initialized project: '{existing_meta.get('name', target_path.name)}'",
+                "project": existing_meta,
+                "path": str(target_path),
+            }
+        except Exception:
+            pass
+
+    smart_ts = get_smart_date(str(target_path))
+    date_str = datetime.datetime.fromtimestamp(smart_ts).strftime("%Y-%m-%d")
+
+    try:
+        project_name = sanitize_path_input(
+            req.name.strip() if req.name and req.name.strip() else target_path.name,
+            max_length=100,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid project name: {e}",
+        ) from e
+
+    norm_path = str(target_path).replace("\\", "/")
+    parts = norm_path.split("/")
+
+    # Infer client
+    if req.client and req.client.strip() and req.client.strip().lower() not in ("none", "internal"):
+        try:
+            meta_client = validate_client_name(req.client.strip())
+        except argparse.ArgumentTypeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            ) from e
+    else:
+        meta_client = "None"
+        if "Clients" in parts:
+            try:
+                meta_client = parts[parts.index("Clients") + 1]
+            except Exception:
+                pass
+
+    # Infer category
+    if req.category and req.category.strip():
+        category = resolve_category_name(req.category.strip())
+        if category not in get_enabled_categories():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unknown or disabled category: {req.category}",
+            )
+    else:
+        category = "Video"
+        for cat_key in ["Code", "Music", "Audio", "AI", "Design", "Photo", "Writing", "Podcast", "Course"]:
+            if cat_key in parts:
+                category = resolve_category_name(cat_key)
+                break
+
+    slug = f"{date_str}_{project_name.replace(' ', '_')}"
+
+    # Create 00_Notes / Idea.md
+    notes_dir = target_path / "00_Notes"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    idea_file = notes_dir / "Idea.md"
+    if not idea_file.exists():
+        try:
+            with open(idea_file, "w", encoding="utf-8") as f:
+                f.write(
+                    f"---\n"
+                    f"type: project\n"
+                    f"category: {category}\n"
+                    f"client: {meta_client}\n"
+                    f"status: active\n"
+                    f"created: {date_str}\n"
+                    f"tags: [creativeos]\n"
+                    f"---\n\n"
+                    f"# {project_name}\n"
+                )
+        except Exception as e:
+            logger.warning(f"Could not create Idea.md: {e}")
+
+    meta = {
+        "name": project_name,
+        "slug": slug,
+        "type": category,
+        "created": date_str,
+        "client": meta_client,
+        "template": "adopted_existing",
+        "root": str(target_path),
+        "status": "active",
+        "last_updated": datetime.datetime.now().isoformat(),
+    }
+
+    try:
+        with open(meta_file, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=4)
+    except Exception as e:
+        logger.error(f"Failed to write metadata file: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create .project_meta.json: {e}",
+        ) from e
+
+    try:
+        update_project_in_storage_index(target_path, metadata=meta, projects_path=PROJECTS_PATH)
+    except Exception:
+        pass
+
+    _invalidate_server_cache()
+
+    return {
+        "status": "success",
+        "message": f"Project '{project_name}' adopted successfully",
+        "project": meta,
+        "path": str(target_path),
+    }
+
+
 def _compute_new_project_path(current_proj_path: Path, new_name: str, new_client: str, new_category: str) -> tuple[Path, str]:
     """Compute target project directory and slug based on updated name, client, and category."""
     original_dirname = current_proj_path.name
@@ -477,8 +901,15 @@ def _compute_new_project_path(current_proj_path: Path, new_name: str, new_client
         clean_client = validate_client_name(new_client.strip())
         target_parent = Path(PROJECTS_PATH) / "Clients" / clean_client
     else:
-        clean_cat = new_category.strip() or "Video"
-        target_parent = Path(PROJECTS_PATH) / clean_cat
+        category = resolve_category_name(new_category.strip() or "Video")
+        category_config = get_enabled_categories().get(category)
+        if category_config is None:
+            raise ValueError(f"Unknown or disabled category: {new_category}")
+        physical_folder = validate_path_component(
+            str(category_config.get("physical_folder") or get_category_folder(category)),
+            max_length=100,
+        )
+        target_parent = Path(PROJECTS_PATH) / physical_folder
 
     if intermediate_parts:
         target_parent = target_parent.joinpath(*intermediate_parts)
@@ -493,19 +924,27 @@ def update_project(project_name: str, req: UpdateProjectRequest) -> dict[str, An
     proj_path, meta = _find_project_dir(project_name)
     meta_file = proj_path / ".project_meta.json"
 
-    if req.name is not None:
-        clean_name = sanitize_path_input(req.name, max_length=100)
-        meta["name"] = clean_name
+    try:
+        if req.name is not None:
+            meta["name"] = sanitize_path_input(req.name, max_length=100)
 
-    if req.client is not None:
-        client_clean = req.client.strip()
-        if client_clean and client_clean.lower() != "none" and client_clean.lower() != "internal":
-            meta["client"] = validate_client_name(client_clean)
-        else:
-            meta["client"] = "None"
+        if req.client is not None:
+            client_clean = req.client.strip()
+            if client_clean and client_clean.lower() not in ("none", "internal"):
+                meta["client"] = validate_client_name(client_clean)
+            else:
+                meta["client"] = "None"
 
-    if req.category is not None:
-        meta["type"] = req.category.strip()
+        if req.category is not None:
+            category = resolve_category_name(req.category.strip())
+            if category not in get_enabled_categories():
+                raise ValueError(f"Unknown or disabled category: {req.category}")
+            meta["type"] = category
+    except (ValueError, argparse.ArgumentTypeError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
 
     if req.description is not None:
         meta["description"] = req.description.strip()
@@ -525,14 +964,26 @@ def update_project(project_name: str, req: UpdateProjectRequest) -> dict[str, An
     # Move or rename directory on disk if requested
     moved_disk = False
     if req.sync_filesystem:
-        target_path, new_slug = _compute_new_project_path(
-            proj_path,
-            new_name=meta.get("name", project_name),
-            new_client=meta.get("client", "None"),
-            new_category=meta.get("type", "Video"),
-        )
+        try:
+            target_path, new_slug = _compute_new_project_path(
+                proj_path,
+                new_name=meta.get("name", project_name),
+                new_client=meta.get("client", "None"),
+                new_category=meta.get("type", "Video"),
+            )
+        except (ValueError, argparse.ArgumentTypeError) as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            ) from e
         target_resolved = target_path.resolve()
         current_resolved = proj_path.resolve()
+        projects_root = Path(PROJECTS_PATH).resolve()
+        if not target_resolved.is_relative_to(projects_root):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Updated project path must remain inside the projects directory",
+            )
 
         if target_resolved != current_resolved:
             if target_resolved.exists():
@@ -605,6 +1056,100 @@ def update_project(project_name: str, req: UpdateProjectRequest) -> dict[str, An
     }
 
 
+@app.post("/api/projects/{name:path}/export-folder")
+def create_project_export_folder(name: str) -> dict[str, Any]:
+    """Resolve project directory and locate/create 02_Exports/YYYY/MM/<project_name> with Video/, Thumbnail/, and Audio/ subfolders based on project creation date."""
+    proj_path, meta = _find_project_dir(name)
+    try:
+        project_slug = validate_path_component(
+            str(meta.get("slug") or meta.get("name") or proj_path.name),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid project export name: {e}",
+        ) from e
+
+    base_exports = Path(EXPORTS_PATH).resolve()
+
+    # 1. Check if an export folder already exists for this project under 02_Exports/
+    existing_export = None
+    if base_exports.exists():
+        try:
+            for month_dir in base_exports.glob("*/*"):
+                candidate = month_dir / project_slug
+                if candidate.is_dir():
+                    existing_export = candidate
+                    break
+            if not existing_export:
+                for month_dir in base_exports.glob("*/*/*"):
+                    candidate = month_dir / project_slug
+                    if candidate.is_dir():
+                        existing_export = candidate
+                        break
+        except Exception:
+            existing_export = None
+
+    if existing_export:
+        export_dir = existing_export
+    else:
+        # 2. Determine target year/month from project creation date
+        created_str, _ = _created_date(proj_path, meta)
+        target_year = None
+        target_month_num = None
+        target_month_name = None
+
+        if created_str and created_str != "Unknown":
+            try:
+                parts = created_str.split("-")
+                if len(parts) >= 2:
+                    y = int(parts[0])
+                    m = int(parts[1])
+                    d_obj = datetime.date(y, m, 1)
+                    target_year = d_obj.strftime("%Y")
+                    target_month_num = d_obj.strftime("%m")
+                    target_month_name = d_obj.strftime("%B")
+            except Exception:
+                pass
+
+        if not target_year:
+            now = datetime.datetime.now()
+            target_year = now.strftime("%Y")
+            target_month_num = now.strftime("%m")
+            target_month_name = now.strftime("%B")
+
+        month_full = f"{target_month_num} - {target_month_name}"
+
+        candidate_named = base_exports / target_year / month_full / project_slug
+        candidate_num = base_exports / target_year / target_month_num / project_slug
+
+        if (base_exports / target_year / month_full).exists():
+            export_dir = candidate_named
+        elif (base_exports / target_year / target_month_num).exists():
+            export_dir = candidate_num
+        else:
+            export_dir = candidate_named
+
+    export_dir = export_dir.resolve()
+    if not export_dir.is_relative_to(base_exports):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Export destination must remain inside the exports directory",
+        )
+
+    subfolders = ["Video", "Thumbnail", "Audio"]
+    for sub in subfolders:
+        (export_dir / sub).mkdir(parents=True, exist_ok=True)
+
+    return {
+        "status": "success",
+        "message": f"Export folder ready for project '{meta.get('name', name)}'",
+        "project": meta.get("name", name),
+        "export_path": str(export_dir),
+        "subfolders": subfolders,
+    }
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # File Explorer Endpoints
 # ──────────────────────────────────────────────────────────────────────────────
@@ -616,16 +1161,30 @@ def list_fs(path: Optional[str] = None) -> dict[str, Any]:
         target_dir = Path(PROJECTS_PATH).resolve()
     else:
         p_str = path.strip()
-        p = Path(p_str)
-        if not p.is_absolute():
-            cand_proj = (Path(PROJECTS_PATH) / p).resolve()
-            cand_root = (Path(ROOT_PATH) / p).resolve()
-            if cand_root.exists() and not cand_proj.exists() and not str(p).startswith("Clients") and str(p) not in ("Video", "Code", "Photo", "Design", "AI", "Audio", "Course", "Writing", "Music", "3D"):
-                target_dir = cand_root
+        p_lower = p_str.lower()
+        if p_lower == "desktop":
+            target_dir = (Path.home() / "Desktop").resolve()
+        elif p_lower == "downloads":
+            if DOWNLOADS_PATH and Path(DOWNLOADS_PATH).exists():
+                target_dir = Path(DOWNLOADS_PATH).resolve()
             else:
-                target_dir = cand_proj
+                target_dir = (Path.home() / "Downloads").resolve()
+        elif p_lower == "documents":
+            target_dir = (Path.home() / "Documents").resolve()
+        elif p_lower == "videos":
+            target_dir = (Path.home() / "Videos").resolve()
+        elif p_lower == "pictures":
+            target_dir = (Path.home() / "Pictures").resolve()
+        elif p_lower in ("00_notes", "00-notes"):
+            target_dir = Path(VAULT_PATH).resolve()
+        elif p_lower in ("02_exports", "02-exports"):
+            target_dir = Path(EXPORTS_PATH).resolve()
         else:
-            target_dir = p.resolve()
+            p = Path(p_str)
+            if not p.is_absolute():
+                target_dir = (Path(PROJECTS_PATH) / p).resolve()
+            else:
+                target_dir = p.resolve()
 
     target_dir = _check_path_allowed(target_dir)
 
@@ -834,6 +1393,172 @@ def get_fs_content(path: str, max_bytes: int = 1_000_000) -> dict[str, Any]:
         "lines": content.count("\n") + 1 if content else 0,
         "truncated": truncated,
     }
+
+
+@app.post("/api/fs/transfer")
+def transfer_fs(req: TransferRequest) -> dict[str, Any]:
+    """Copy or move files safely across allowed filesystem locations."""
+    if not req.source.strip() or not req.destination.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Source and destination paths are required",
+        )
+
+    src_resolved = Path(req.source.strip()).resolve()
+    dst_resolved = Path(req.destination.strip()).resolve()
+
+    src_safe = _check_path_allowed(src_resolved)
+    dst_safe = _check_path_allowed(dst_resolved)
+
+    if not src_safe.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source path does not exist: {src_safe}",
+        )
+    if _is_allowed_root(src_safe):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot transfer a root system/storage directory",
+        )
+
+    # Determine final destination target
+    if dst_safe.is_dir():
+        final_dest = dst_safe / src_safe.name
+    else:
+        final_dest = dst_safe
+
+    if final_dest.resolve() == src_safe.resolve():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Source and destination cannot be identical",
+        )
+
+    # Handle collisions if not overwriting
+    if final_dest.exists() and not req.overwrite:
+        stem = final_dest.stem if final_dest.is_file() else final_dest.name
+        suffix = final_dest.suffix if final_dest.is_file() else ""
+        counter = 1
+        while final_dest.exists():
+            counter += 1
+            final_dest = final_dest.parent / f"{stem}_copy_{counter}{suffix}"
+
+    final_dest = _check_path_allowed(final_dest)
+    if src_safe.is_dir() and src_safe in final_dest.parents:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot transfer a directory into itself",
+        )
+    if req.move and req.overwrite and src_safe.is_dir() and final_dest.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot move onto an existing directory; choose copy with overwrite or another destination",
+        )
+
+    try:
+        final_dest.parent.mkdir(parents=True, exist_ok=True)
+        if req.move:
+            shutil.move(str(src_safe), str(final_dest))
+            action = "moved"
+        else:
+            if src_safe.is_dir():
+                shutil.copytree(str(src_safe), str(final_dest), dirs_exist_ok=req.overwrite)
+            else:
+                shutil.copy2(str(src_safe), str(final_dest))
+            action = "copied"
+
+        _invalidate_server_cache()
+
+        return {
+            "status": "success",
+            "message": f"Successfully {action} '{src_safe.name}' to '{final_dest}'",
+            "action": action,
+            "source": str(src_safe),
+            "destination": str(final_dest),
+        }
+    except Exception as e:
+        logger.error(f"Transfer error from {src_safe} to {final_dest}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Transfer failed: {e}",
+        ) from e
+
+
+@app.post("/api/fs/delete")
+def delete_filesystem_item(req: DeletePathRequest) -> dict[str, Any]:
+    """Delete a file or folder safely (default sends to Windows Recycle Bin)."""
+    target = _check_path_allowed(req.path)
+    if not target.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Target path does not exist: {target}",
+        )
+
+    resolved = target.resolve()
+    if _is_allowed_root(resolved):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete root system/storage directory",
+        )
+
+    is_dir = target.is_dir()
+    name = target.name
+    path_str = str(resolved)
+
+    try:
+        recycled = False
+        if not req.permanent and req.recycle_bin:
+            if sys.platform != "win32":
+                raise HTTPException(
+                    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                    detail="Recycle Bin deletion is only supported on Windows",
+                )
+            method = "DeleteDirectory" if is_dir else "DeleteFile"
+            escaped_path = path_str.replace("'", "''")
+            cmd = f"Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::{method}('{escaped_path}', 'OnlyErrorDialogs', 'SendToRecycleBin')"
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", cmd],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res.returncode != 0:
+                error = res.stderr.strip() or res.stdout.strip() or "Unknown PowerShell error"
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Could not move '{name}' to the Recycle Bin: {error}",
+                )
+            recycled = True
+        else:
+            if is_dir:
+                if not robust_rmtree(path_str):
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=f"Could not completely delete directory: {path_str}",
+                    )
+            else:
+                os.remove(path_str)
+
+        # If it was a project in storage index, remove it
+        try:
+            remove_project_from_storage_index(path_str)
+        except Exception:
+            pass
+
+        return {
+            "status": "success",
+            "message": f"Successfully deleted '{name}'",
+            "path": path_str,
+            "is_dir": is_dir,
+            "recycled": recycled,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete '{name}' at {path_str}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete '{name}': {e}",
+        ) from e
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1345,6 +2070,81 @@ def update_config_paths(req: UpdatePathsRequest) -> dict[str, Any]:
     }
 
 
+@app.get("/api/config/drives")
+def get_drives_endpoint() -> dict[str, Any]:
+    """Get all connected Windows drives and configured external mounts."""
+    drives = []
+    # Discover available drive letters on Windows
+    for letter in string.ascii_uppercase:
+        drive_path = f"{letter}:\\"
+        try:
+            p = Path(drive_path)
+            if p.exists():
+                drives.append({
+                    "name": f"Drive ({letter}:)",
+                    "path": drive_path,
+                    "is_system": (letter == "C"),
+                    "exists": True,
+                })
+        except Exception:
+            pass
+
+    config = _load_config()
+    configured_mounts = config.get("external_mounts", [])
+    return {
+        "drives": drives,
+        "external_mounts": configured_mounts,
+    }
+
+
+@app.put("/api/config/mounts")
+def update_config_mounts(req: UpdateMountsRequest) -> dict[str, Any]:
+    """Update configured external storage mounts."""
+    config = _load_config()
+    valid_mounts = []
+    for m in req.mounts:
+        if isinstance(m, dict) and "path" in m and m["path"].strip():
+            p_str = m["path"].strip()
+            name_str = m.get("name", "").strip() or Path(p_str).name or p_str
+            valid_mounts.append({
+                "name": name_str,
+                "path": str(Path(p_str)),
+            })
+
+    config["external_mounts"] = valid_mounts
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=4)
+
+    reload_config()
+    _invalidate_server_cache()
+    return {
+        "status": "success",
+        "message": "External mounts updated successfully",
+        "external_mounts": valid_mounts,
+    }
+
+
+@app.put("/api/categories")
+def update_categories_endpoint(req: UpdateCategoriesRequest) -> dict[str, Any]:
+    """Update categories configuration."""
+    from .category_config import load_categories, save_categories
+    cats_config = load_categories()
+    cats_config["categories"] = req.categories
+    if req.default_category:
+        cats_config["default_category"] = req.default_category
+
+    ok = save_categories(cats_config)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save categories configuration")
+
+    _invalidate_server_cache()
+    return {
+        "status": "success",
+        "message": "Categories updated successfully",
+        "categories": req.categories,
+    }
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Note Sync (JSON & SSE Stream)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1388,6 +2188,160 @@ def sync_stream_endpoint() -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Studio & System Automations
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/system/clean-downloads")
+def clean_downloads(req: CleanDownloadsRequest = CleanDownloadsRequest()) -> dict[str, Any]:
+    """Sort loose files in Downloads or target directory into categorized subfolders."""
+    if req.folder and req.folder.strip():
+        target_dir = Path(req.folder.strip()).resolve()
+    else:
+        if DOWNLOADS_PATH and Path(DOWNLOADS_PATH).exists():
+            target_dir = Path(DOWNLOADS_PATH).resolve()
+        else:
+            target_dir = (Path.home() / "Downloads").resolve()
+
+    target_dir = _check_path_allowed(target_dir)
+
+    if not target_dir.exists() or not target_dir.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Target directory not found: {target_dir}",
+        )
+
+    MAPPING = {
+        "_Images": [".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".tiff", ".bmp", ".ico", ".raw", ".cr2", ".nef", ".heic"],
+        "_Video": [".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v", ".ts", ".mts"],
+        "_Audio": [".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a", ".wma", ".aiff", ".alac"],
+        "_Archives": [".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".iso"],
+        "_Docs": [".pdf", ".docx", ".doc", ".txt", ".xlsx", ".xls", ".pptx", ".ppt", ".csv", ".md", ".rtf", ".epub"],
+        "_Executables": [".exe", ".msi", ".dmg", ".pkg", ".deb", ".rpm", ".appimage", ".bat", ".cmd", ".ps1"],
+    }
+
+    count = 0
+    errors: list[str] = []
+
+    try:
+        items = list(target_dir.iterdir())
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission denied accessing directory: {e}",
+        )
+
+    for item_path in items:
+        if item_path.name.startswith("."):
+            continue
+        if not item_path.is_file():
+            continue
+
+        ext = item_path.suffix.lower()
+        target_folder_name = None
+
+        for folder_name, extensions in MAPPING.items():
+            if ext in extensions:
+                target_folder_name = folder_name
+                break
+
+        if not target_folder_name:
+            continue
+
+        dest_dir = target_dir / target_folder_name
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        dest_file = dest_dir / item_path.name
+        if dest_file.exists():
+            stem = item_path.stem
+            suffix = item_path.suffix
+            counter = 2
+            while dest_file.exists():
+                dest_file = dest_dir / f"{stem}_v{counter}{suffix}"
+                counter += 1
+
+        try:
+            shutil.move(str(item_path), str(dest_file))
+            count += 1
+        except Exception as e:
+            logger.warning(f"Could not move {item_path.name}: {e}")
+            errors.append(f"{item_path.name}: {e}")
+
+    return {
+        "status": "success",
+        "message": f"Cleaned downloads: {count} files organized",
+        "folder": str(target_dir),
+        "moved_count": count,
+        "errors": errors,
+    }
+
+
+@app.post("/api/exports/sort-inbox")
+def sort_exports_inbox(req: SortExportsRequest = SortExportsRequest()) -> dict[str, Any]:
+    """Sort unfiled export renders into 02_Exports/YYYY/MM - Month/ based on file timestamps."""
+    if req.inbox_path and req.inbox_path.strip():
+        inbox_path = Path(req.inbox_path.strip()).resolve()
+    else:
+        inbox_path = (Path(EXPORTS_PATH) / "_Inbox").resolve()
+
+    inbox_path = _check_path_allowed(inbox_path)
+
+    if not inbox_path.exists():
+        inbox_path.mkdir(parents=True, exist_ok=True)
+        return {
+            "status": "success",
+            "message": f"Created Inbox at {inbox_path}",
+            "moved_count": 0,
+            "errors": [],
+        }
+
+    count = 0
+    errors: list[str] = []
+
+    try:
+        items = list(inbox_path.iterdir())
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission denied reading Inbox: {e}",
+        )
+
+    for item_path in items:
+        if item_path.name.startswith("."):
+            continue
+
+        smart_ts = get_smart_date(str(item_path))
+        date_obj = datetime.datetime.fromtimestamp(smart_ts)
+        year = date_obj.strftime("%Y")
+        month_folder = date_obj.strftime("%m - %B")
+
+        dest_dir = Path(EXPORTS_PATH) / year / month_folder
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        dest_path = dest_dir / item_path.name
+        if dest_path.exists():
+            stem = item_path.stem if item_path.is_file() else item_path.name
+            suffix = item_path.suffix if item_path.is_file() else ""
+            counter = 2
+            while dest_path.exists():
+                dest_path = dest_dir / f"{stem}_v{counter}{suffix}"
+                counter += 1
+
+        try:
+            shutil.move(str(item_path), str(dest_path))
+            count += 1
+        except Exception as e:
+            logger.warning(f"Could not move export item {item_path.name}: {e}")
+            errors.append(f"{item_path.name}: {e}")
+
+    return {
+        "status": "success",
+        "message": f"Sorted {count} items into monthly export directories",
+        "moved_count": count,
+        "errors": errors,
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────

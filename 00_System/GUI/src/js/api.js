@@ -181,8 +181,54 @@ export const api = {
     method: "POST",
     body: JSON.stringify({ path }),
   }),
+  openFile: (path) => request("/fs/open", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  }),
   getRawFileUrl: (path) => `/api/fs/raw?path=${encodeURIComponent(path)}`,
   getFileContent: (path, maxBytes = 500000) => request(`/fs/content?path=${encodeURIComponent(path)}&max_bytes=${maxBytes}`),
+  transferFiles: (payload) => request("/fs/transfer", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+  deletePath: async (path, permanent = false) => {
+    const res = await request("/fs/delete", {
+      method: "POST",
+      body: JSON.stringify({ path, permanent, recycle_bin: !permanent }),
+    });
+    cacheStore.invalidate("projects");
+    cacheStore.invalidate("storage");
+    return res;
+  },
+  cleanDownloads: (folder = null) => request("/system/clean-downloads", {
+    method: "POST",
+    body: JSON.stringify({ folder }),
+  }),
+  sortExportsInbox: (inbox_path = null) => request("/exports/sort-inbox", {
+    method: "POST",
+    body: JSON.stringify({ inbox_path }),
+  }),
+  cloneProject: async (payload) => {
+    const res = await request("/projects/clone", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    cacheStore.invalidate("projects");
+    cacheStore.invalidate("storage");
+    return res;
+  },
+  initProject: async (payload) => {
+    const res = await request("/projects/init", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    cacheStore.invalidate("projects");
+    cacheStore.invalidate("storage");
+    return res;
+  },
+  createExportFolder: (name) => request(`/projects/${encodeURIComponent(name)}/export-folder`, {
+    method: "POST",
+  }),
 
   // Storage & Reclaim
   getStorage: () => request("/storage"),
@@ -247,6 +293,30 @@ export const api = {
       }),
     });
     cacheStore.invalidate("config");
+    return res;
+  },
+
+  // Drives & External Storage Mounts
+  getDrives: () => request("/config/drives"),
+  updateMounts: async (mounts) => {
+    const res = await request("/config/mounts", {
+      method: "PUT",
+      body: JSON.stringify({ mounts }),
+    });
+    cacheStore.invalidate("config");
+    return res;
+  },
+
+  // Category Configuration
+  updateCategories: async (categories, defaultCategory = null) => {
+    const res = await request("/categories", {
+      method: "PUT",
+      body: JSON.stringify({
+        categories,
+        default_category: defaultCategory,
+      }),
+    });
+    cacheStore.invalidate("categories");
     return res;
   },
 

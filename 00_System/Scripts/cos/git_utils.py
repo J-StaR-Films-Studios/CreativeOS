@@ -1,6 +1,7 @@
 """Git operations."""
 
 import os
+import sys
 import shutil
 import subprocess
 from rich.prompt import Confirm

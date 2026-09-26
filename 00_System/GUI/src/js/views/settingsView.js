@@ -48,12 +48,12 @@ export async function renderSettings(container) {
       </div>
     </div>
 
-    <!-- System Paths -->
+    <!-- System Storage Paths -->
     <div class="settings-section">
       <div class="section-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
         <div>
-          <h2 class="section-title">Storage Paths</h2>
-          <p class="section-desc">Active workspace drive locations from <code>00_System/Config/config.json</code></p>
+          <h2 class="section-title">Workspace Storage Paths</h2>
+          <p class="section-desc">Active workspace locations from <code>00_System/Config/config.json</code></p>
         </div>
         <button id="toggle-edit-paths-btn" class="btn btn-secondary" style="font-size: 0.785rem;">
           ${icons.edit}
@@ -70,11 +70,51 @@ export async function renderSettings(container) {
       </div>
     </div>
 
-    <!-- Category Blueprints Section (Clean Direct Surface) -->
+    <!-- External Mounts & RAID Drives -->
+    <div class="settings-section">
+      <div class="section-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
+        <div>
+          <h2 class="section-title">External Mounts &amp; Connected Drives</h2>
+          <p class="section-desc">Add external RAID arrays, secondary SSDs, or custom staging folders</p>
+        </div>
+        <button id="btn-add-mount-toggle" class="btn btn-secondary" style="font-size: 0.785rem;">
+          ${icons.plus}
+          <span>Add Storage Mount</span>
+        </button>
+      </div>
+      <div id="mounts-list-container">
+        <div class="loading-state" style="padding: 1.5rem;">
+          <div class="spinner"></div>
+          <p>Loading external mounts...</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Desktop Explorer Preferences -->
+    <div class="settings-section">
+      <div class="section-header" style="margin-bottom: 0.85rem;">
+        <h2 class="section-title">Desktop Explorer Preferences</h2>
+        <p class="section-desc">Customize default view layout and interactive behaviors</p>
+      </div>
+      <div style="background: var(--surface-bg-card); padding: 1.25rem; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+          <div>
+            <div style="font-weight: 600; font-size: 0.85rem; color: var(--text-primary);">Default Directory Layout</div>
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.15rem;">Initial view mode used when opening a new directory</div>
+          </div>
+          <select id="pref-default-view-select" class="form-input font-mono" style="width: auto; min-width: 160px; padding: 0.35rem 0.65rem;">
+            <option value="grid">Large Icons Grid</option>
+            <option value="details">Details Table</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Category Blueprints Section -->
     <div style="margin-top: 1.75rem; margin-bottom: 1.5rem;">
       <div class="section-header" style="margin-bottom: 0.85rem;">
-        <h2 class="section-title">Category Blueprints</h2>
-        <p class="section-desc">Project scaffolding templates and structure rules from <code>00_System/Config/categories.json</code></p>
+        <h2 class="section-title">Category Blueprints &amp; Templates</h2>
+        <p class="section-desc">Manage project category blueprints and scaffolding from <code>00_System/Config/categories.json</code></p>
       </div>
       <div id="categories-table-container">
         ${hasCache ? '' : `
@@ -212,6 +252,127 @@ export async function renderSettings(container) {
     renderPaths(currentConfigData);
   });
 
+  let isAddingMount = false;
+
+  function renderMounts(configData) {
+    const mountsContainer = document.getElementById("mounts-list-container");
+    if (!mountsContainer) return;
+
+    const rawConfig = configData?.config || configData || {};
+    const mounts = rawConfig.external_mounts || [];
+
+    if (isAddingMount) {
+      mountsContainer.innerHTML = `
+        <form id="add-mount-form" class="studio-form" style="background: var(--surface-bg-card); padding: 1.25rem; border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
+          <div style="display: flex; flex-direction: column; gap: 0.85rem;">
+            <div class="form-group">
+              <label class="form-label" for="mount-name-input">Mount Label / Drive Name</label>
+              <input type="text" id="mount-name-input" class="form-input" placeholder="e.g. Media RAID (E:), Secondary SSD" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label font-mono" for="mount-path-input">Drive or Folder Path</label>
+              <input type="text" id="mount-path-input" class="form-input font-mono" placeholder="e.g. E:\\ or D:\\Footage_Staging" required />
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 0.5rem;">
+              <button type="button" class="btn btn-secondary" id="cancel-add-mount-btn">Cancel</button>
+              <button type="submit" class="btn btn-primary" id="save-new-mount-btn">
+                ${icons.plus} Add Mount
+              </button>
+            </div>
+          </div>
+        </form>
+      `;
+
+      document.getElementById("cancel-add-mount-btn")?.addEventListener("click", () => {
+        isAddingMount = false;
+        renderMounts(currentConfigData);
+      });
+
+      document.getElementById("add-mount-form")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const name = document.getElementById("mount-name-input")?.value.trim();
+        const p = document.getElementById("mount-path-input")?.value.trim();
+        if (!p) return;
+
+        const updated = [...mounts, { name: name || p, path: p }];
+        try {
+          await api.updateMounts(updated);
+          showToast(`Added external mount: ${name || p}`, "success");
+          isAddingMount = false;
+          const fresh = await api.getConfig();
+          currentConfigData = fresh;
+          renderMounts(fresh);
+        } catch (err) {
+          showToast(`Failed to add mount: ${err.message}`, "error");
+        }
+      });
+      return;
+    }
+
+    if (mounts.length === 0) {
+      mountsContainer.innerHTML = `
+        <div style="background: var(--surface-bg-card); padding: 1.25rem; border-radius: var(--radius-md); border: 1px dashed var(--border-subtle); text-align: center; color: var(--text-muted); font-size: 0.8rem;">
+          <p>No custom external mounts configured yet. Click "Add Storage Mount" to mount external drives or folders.</p>
+        </div>
+      `;
+      return;
+    }
+
+    mountsContainer.innerHTML = `
+      <div class="path-list">
+        ${mounts.map((m, idx) => `
+          <div class="path-item">
+            <div class="path-meta">
+              <div class="path-title-row">
+                <span class="path-name mount-label" style="color: var(--color-accent-cyan);"></span>
+                <span class="path-status status-ok">Configured</span>
+              </div>
+              <span class="path-val font-mono mount-path"></span>
+            </div>
+            <button class="icon-button remove-mount-btn" data-index="${idx}" title="Remove Mount" aria-label="Remove mount" style="color: var(--color-danger);">
+              ${icons.x}
+            </button>
+          </div>
+        `).join("")}
+      </div>
+    `;
+
+    mountsContainer.querySelectorAll(".path-item").forEach((item, idx) => {
+      item.querySelector(".mount-label").textContent = mounts[idx].name || mounts[idx].path;
+      item.querySelector(".mount-path").textContent = mounts[idx].path;
+    });
+
+    mountsContainer.querySelectorAll(".remove-mount-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const idx = parseInt(btn.getAttribute("data-index"), 10);
+        const updated = mounts.filter((_, i) => i !== idx);
+        try {
+          await api.updateMounts(updated);
+          showToast("Storage mount removed", "info");
+          const fresh = await api.getConfig();
+          currentConfigData = fresh;
+          renderMounts(fresh);
+        } catch (err) {
+          showToast(`Failed: ${err.message}`, "error");
+        }
+      });
+    });
+  }
+
+  document.getElementById("btn-add-mount-toggle")?.addEventListener("click", () => {
+    isAddingMount = !isAddingMount;
+    renderMounts(currentConfigData);
+  });
+
+  const prefSelect = document.getElementById("pref-default-view-select");
+  if (prefSelect) {
+    prefSelect.value = localStorage.getItem("cos_last_global_view") || "grid";
+    prefSelect.addEventListener("change", () => {
+      localStorage.setItem("cos_last_global_view", prefSelect.value);
+      showToast(`Default view layout set to: ${prefSelect.value === 'grid' ? 'Large Icons Grid' : 'Details Table'}`, "info", 1500);
+    });
+  }
+
   let selectedCategoryKey = "Video";
 
   function renderCategories(catData) {
@@ -262,7 +423,7 @@ export async function renderSettings(container) {
         <!-- Right Column: Detail Blueprint Panel -->
         <div class="blueprint-detail-panel">
           <!-- Detail Header -->
-          <div class="blueprint-detail-header">
+          <div class="blueprint-detail-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
             <div class="blueprint-detail-identity">
               <div class="blueprint-detail-icon-box">
                 ${catIconSvg}
@@ -270,7 +431,7 @@ export async function renderSettings(container) {
               <div>
                 <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
                   <h3 class="blueprint-detail-title">${selectedCategoryKey}</h3>
-                  <span class="status-indicator-tag is-active">
+                  <span class="status-indicator-tag ${currentCat.enabled !== false ? 'is-active' : ''}">
                     <span class="status-dot"></span>
                     <span>${currentCat.enabled !== false ? 'Active Blueprint' : 'Disabled'}</span>
                   </span>
@@ -278,6 +439,9 @@ export async function renderSettings(container) {
                 <p class="blueprint-detail-desc">${currentCat.description || 'Standard project scaffold and template structure'}</p>
               </div>
             </div>
+            <button class="btn btn-secondary btn-toggle-cat" data-cat-key="${selectedCategoryKey}" style="font-size: 0.75rem; padding: 0.25rem 0.6rem;">
+              ${currentCat.enabled !== false ? 'Disable Category' : 'Enable Category'}
+            </button>
           </div>
 
           <!-- Quick Metrics Strip -->
@@ -343,17 +507,40 @@ export async function renderSettings(container) {
         }
       });
     });
+
+    categoriesContainer.querySelector(".btn-toggle-cat")?.addEventListener("click", async () => {
+      const isEnabled = currentCat.enabled !== false;
+      const remaining = Object.keys(categories).filter(key => key !== selectedCategoryKey && categories[key].enabled !== false);
+      if (isEnabled && remaining.length === 0) {
+        showToast("Keep at least one project category enabled", "warning");
+        return;
+      }
+      const defaultCategory = isEnabled && selectedCategoryKey === catData.default_category
+        ? remaining[0]
+        : catData.default_category;
+      categories[selectedCategoryKey].enabled = !isEnabled;
+      try {
+        await api.updateCategories(categories, defaultCategory);
+        showToast(`${selectedCategoryKey} category ${!isEnabled ? 'enabled' : 'disabled'}`, "success");
+        renderCategories({ ...catData, categories, default_category: defaultCategory });
+      } catch (err) {
+        categories[selectedCategoryKey].enabled = isEnabled;
+        showToast(`Failed to update category: ${err.message}`, "error");
+      }
+    });
   }
 
   async function loadSettingsData() {
     try {
       if (hasCache) {
         renderPaths(cachedConfig);
+        renderMounts(cachedConfig);
         renderCategories(cachedCats);
       }
 
       api.getConfigSWR((freshConfig) => {
         renderPaths(freshConfig);
+        renderMounts(freshConfig);
       });
 
       api.getCategoriesSWR((freshCats) => {

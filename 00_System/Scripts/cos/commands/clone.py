@@ -62,9 +62,11 @@ Examples:
         type=validate_project_name,
         help="Override the project name derived from the repository URL.",
     )
+    from .new import validate_category
+
     p_clone.add_argument(
         "-c", "--category",
-        type=str,
+        type=validate_category,
         default="Code",  # Default to Code for clone operations
         choices=category_choices,
         help="Project category that determines the target folder.  (default: Code for clone)",

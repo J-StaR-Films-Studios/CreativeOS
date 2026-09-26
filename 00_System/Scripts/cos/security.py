@@ -1,9 +1,10 @@
 """Security utilities for input validation and sanitization."""
 
-import re
 import argparse
 import datetime
+import re
 from urllib.parse import urlparse
+
 
 def sanitize_path_input(value: str, max_length: int = 100) -> str:
     """
@@ -96,6 +97,15 @@ def validate_git_url(url: str) -> str:
         "  - git@github.com:user/repo.git\n"
         "  - git://github.com/user/repo.git"
     )
+
+def validate_path_component(value: str, max_length: int = 255) -> str:
+    """Validate a value that must remain one filesystem path component."""
+    original = value.strip()
+    sanitized = sanitize_path_input(original, max_length=max_length)
+    if sanitized != original or original.endswith("."):
+        raise ValueError(f"Input '{value}' is not a valid path component")
+    return sanitized
+
 
 def validate_project_name(value: str) -> str:
     """

@@ -112,10 +112,11 @@ def get_syncable_files(root_dir: str) -> Dict[str, Optional[FileFingerprint]]:
                 files[rel_path] = get_file_fingerprint(full_path)
     return files
 
-def sync_two_folders(dir_a: str, dir_b: str, prev_state: Optional[SyncState] = None) -> Tuple[List[Dict[str, str]], SyncState]:
+def sync_two_folders(dir_a: str, dir_b: str, prev_state: Optional[SyncState] = None, dry_run: bool = False) -> Tuple[List[Dict[str, str]], SyncState]:
     """Bidirectional Sync: A (Project) <-> B (Vault). Recursively syncs .md and .pdf files."""
-    if not os.path.exists(dir_a): os.makedirs(dir_a)
-    if not os.path.exists(dir_b): os.makedirs(dir_b)
+    if not dry_run:
+        if not os.path.exists(dir_a): os.makedirs(dir_a)
+        if not os.path.exists(dir_b): os.makedirs(dir_b)
 
     files_a = get_syncable_files(dir_a)
     files_b = get_syncable_files(dir_b)
@@ -133,18 +134,20 @@ def sync_two_folders(dir_a: str, dir_b: str, prev_state: Optional[SyncState] = N
         # Case 1: New in A
         if fp_a and not fp_b:
             try:
-                os.makedirs(os.path.dirname(path_b), exist_ok=True)
-                shutil.copy2(path_a, path_b)
-                logs.append({"type": "push", "file": rel_path, "msg": "Pushed to Vault"})
+                if not dry_run:
+                    os.makedirs(os.path.dirname(path_b), exist_ok=True)
+                    shutil.copy2(path_a, path_b)
+                logs.append({"type": "push", "file": rel_path, "msg": "Would push to Vault" if dry_run else "Pushed to Vault"})
                 new_state[rel_path] = fp_a
             except Exception as e: logs.append({"type": "error", "file": rel_path, "msg": str(e)})
 
         # Case 2: New in B
         elif fp_b and not fp_a:
             try:
-                os.makedirs(os.path.dirname(path_a), exist_ok=True)
-                shutil.copy2(path_b, path_a)
-                logs.append({"type": "pull", "file": rel_path, "msg": "Pulled from Vault"})
+                if not dry_run:
+                    os.makedirs(os.path.dirname(path_a), exist_ok=True)
+                    shutil.copy2(path_b, path_a)
+                logs.append({"type": "pull", "file": rel_path, "msg": "Would pull from Vault" if dry_run else "Pulled from Vault"})
                 new_state[rel_path] = fp_b
             except Exception as e: logs.append({"type": "error", "file": rel_path, "msg": str(e)})
 
@@ -176,18 +179,21 @@ def sync_two_folders(dir_a: str, dir_b: str, prev_state: Optional[SyncState] = N
                         mtime_b = fp_b["mtime"]
                         
                         if mtime_a > mtime_b:
-                            shutil.copy2(path_a, path_b)
-                            logs.append({"type": "update_vault", "file": rel_path, "msg": "Updated Vault"})
-                            new_state[rel_path] = get_file_fingerprint(path_b)
+                            if not dry_run:
+                                shutil.copy2(path_a, path_b)
+                            logs.append({"type": "update_vault", "file": rel_path, "msg": "Would update Vault" if dry_run else "Updated Vault"})
+                            new_state[rel_path] = fp_a if dry_run else get_file_fingerprint(path_b)
                         elif mtime_b > mtime_a:
-                            shutil.copy2(path_a, path_a + ".bak")
-                            shutil.copy2(path_b, path_a)
-                            logs.append({"type": "update_project", "file": rel_path, "msg": "Updated Project (Backup made)"})
-                            new_state[rel_path] = get_file_fingerprint(path_a)
+                            if not dry_run:
+                                shutil.copy2(path_a, path_a + ".bak")
+                                shutil.copy2(path_b, path_a)
+                            logs.append({"type": "update_project", "file": rel_path, "msg": "Would update Project (with backup)" if dry_run else "Updated Project (Backup made)"})
+                            new_state[rel_path] = fp_b if dry_run else get_file_fingerprint(path_a)
                         else:
-                            shutil.copy2(path_a, path_b)
-                            logs.append({"type": "conflict", "file": rel_path, "msg": "Content mismatch. Forced Push."})
-                            new_state[rel_path] = get_file_fingerprint(path_b)
+                            if not dry_run:
+                                shutil.copy2(path_a, path_b)
+                            logs.append({"type": "conflict", "file": rel_path, "msg": "Content mismatch. Would push." if dry_run else "Content mismatch. Forced Push."})
+                            new_state[rel_path] = fp_a if dry_run else get_file_fingerprint(path_b)
                     else:
                         new_state[rel_path] = fp_a
                 except Exception as e: logs.append({"type": "error", "file": rel_path, "msg": str(e)})
@@ -197,6 +203,7 @@ def sync_two_folders(dir_a: str, dir_b: str, prev_state: Optional[SyncState] = N
 def run_sync(
     projects_path: str | None = None,
     vault_path: str | None = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Execute bidirectional note sync between projects and Obsidian vault.
     
@@ -206,7 +213,7 @@ def run_sync(
     proj_root = projects_path or PROJECTS_PATH
     vault_root = vault_path or VAULT_PATH
     vault_projects_dir = os.path.join(vault_root, "01_Active_Projects")
-    if not os.path.exists(vault_projects_dir):
+    if not dry_run and not os.path.exists(vault_projects_dir):
         os.makedirs(vault_projects_dir, exist_ok=True)
 
     prev_sync_state = load_sync_state()
@@ -232,7 +239,7 @@ def run_sync(
 
             project_prev_state = prev_sync_state.get("projects", {}).get(project_name, {}).get("files", {})
 
-            logs, project_state = sync_two_folders(notes_project, notes_vault, project_prev_state)
+            logs, project_state = sync_two_folders(notes_project, notes_vault, project_prev_state, dry_run=dry_run)
 
             if project_state:
                 if "projects" not in new_sync_state:
@@ -256,7 +263,8 @@ def run_sync(
 
     sync_timestamp = datetime.datetime.now().isoformat()
     new_sync_state["last_full_sync"] = sync_timestamp
-    save_sync_state(new_sync_state)
+    if not dry_run:
+        save_sync_state(new_sync_state)
 
     logger.info(f"Sync complete: {total_changes} operations across {projects_synced} projects")
     return {
@@ -355,16 +363,16 @@ def stream_sync(
 
 def cmd_sync(args: argparse.Namespace) -> None:
     """Sync Notes between Projects and Obsidian Vault."""
-    logger.info("Starting sync operation")
-    console.rule("[bold purple]Syncing CreativeOS Brain")
+    logger.info("Starting sync operation (dry run: %s)", args.dry_run)
+    console.rule("[bold purple]Previewing CreativeOS Sync" if args.dry_run else "[bold purple]Syncing CreativeOS Brain")
 
     changes_table = Table(show_header=True, header_style="bold magenta", box=box.SIMPLE)
     changes_table.add_column("Project", style="cyan")
     changes_table.add_column("Action", style="white")
     changes_table.add_column("File", style="dim")
 
-    with console.status("[bold cyan]Syncing Notes...[/bold cyan]"):
-        result = run_sync()
+    with console.status("[bold cyan]Checking Notes...[/bold cyan]" if args.dry_run else "[bold cyan]Syncing Notes...[/bold cyan]"):
+        result = run_sync(dry_run=args.dry_run)
 
     for log in result["logs"]:
         symbol = "✅"
@@ -387,5 +395,6 @@ def cmd_sync(args: argparse.Namespace) -> None:
         console.print(f"[success]✅ Everything is up to date. ({result['projects_synced']} projects scanned)[/success]")
     else:
         console.print(changes_table)
-        console.print(f"[success]✨ Sync Complete. {result['total_changes']} operations across {result['projects_synced']} projects.[/success]")
+        verb = "would change" if args.dry_run else "completed"
+        console.print(f"[success]{result['total_changes']} operations {verb} across {result['projects_synced']} projects.[/success]")
 

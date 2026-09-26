@@ -48,7 +48,7 @@ function updateFloatingProgressPill() {
     <div class="reclaim-pill-pulse" style="background-color: ${isDone ? 'var(--color-success)' : 'var(--color-warning)'};"></div>
     <div style="display: flex; flex-direction: column; gap: 0.1rem;">
       <span style="font-size: 0.75rem; font-weight: 700; color: var(--text-primary);">
-        ${isDone ? `⚡ Reclaimed ${formatBytes(totalFreed)}` : `⚡ ${title}`}
+        ${isDone ? `Reclaimed ${formatBytes(totalFreed)}` : `${title}`}
       </span>
       <span style="font-size: 0.65rem; color: var(--text-muted);" class="font-mono">
         ${isDone ? 'All caches cleared' : `${current}/${total} items &bull; Freed ${formatBytes(totalFreed)}`}
@@ -393,7 +393,7 @@ export async function openReclaimModal(project, onReclaimed) {
           (completeData) => {
             isRunning = false;
             totalFreed = completeData.total_freed_bytes || totalFreed;
-            showToast(`⚡ Reclaimed ${formatBytes(totalFreed)} from ${project.name}!`, "success");
+            showToast(`Reclaimed ${formatBytes(totalFreed)} from ${project.name}!`, "success");
 
             if (activeReclaimJob) {
               activeReclaimJob.status = "complete";
@@ -416,7 +416,7 @@ export async function openReclaimModal(project, onReclaimed) {
         // Fallback to direct POST if SSE is unsupported
         try {
           const purgeRes = await api.reclaimProject(lookupKey, selectedTargets);
-          showToast(`⚡ Reclaimed ${formatBytes(purgeRes.freed_bytes || 0)} from ${project.name}!`, "success");
+          showToast(`Reclaimed ${formatBytes(purgeRes.freed_bytes || 0)} from ${project.name}!`, "success");
           activeReclaimJob = null;
           updateFloatingProgressPill();
           close();
@@ -830,7 +830,7 @@ export function openBulkReclaimModal(storageData, onReclaimed, initialTab = "all
               }, 4000);
             }
 
-            showToast(`⚡ Successfully reclaimed ${formatBytes(totalFreed)}!`, "success");
+            showToast(`Successfully reclaimed ${formatBytes(totalFreed)}!`, "success");
 
             executeBtn.style.display = "none";
             const cancelBtn = container.querySelector("#bulk-reclaim-cancel-btn");
@@ -855,7 +855,7 @@ export function openBulkReclaimModal(storageData, onReclaimed, initialTab = "all
           `;
           consoleBody.scrollTop = consoleBody.scrollHeight;
           consoleStatus.textContent = "Finished";
-          showToast(`⚡ Successfully reclaimed ${formatBytes(totalFreedRes)}!`, "success");
+          showToast(`Successfully reclaimed ${formatBytes(totalFreedRes)}!`, "success");
           activeReclaimJob = null;
           updateFloatingProgressPill();
 

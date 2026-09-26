@@ -1,8 +1,10 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
-from starlette.testclient import TestClient
 from cos.api import app
+from starlette.testclient import TestClient
 
 
 @pytest.fixture
@@ -164,6 +166,28 @@ def test_fs_list_endpoint_and_security_boundary(client, temp_projects_dir, monke
     # 2. Test path traversal security boundary rejection
     outside_resp = client.get("/api/fs/list?path=C:/Windows/System32")
     assert outside_resp.status_code == 403
+
+
+def test_fs_list_resolves_workspace_aliases_and_custom_categories(
+    client, temp_projects_dir, temp_dir, monkeypatch
+):
+    vault_dir = temp_dir / "03_Vault"
+    exports_dir = temp_dir / "02_Exports"
+    custom_category = temp_projects_dir / "Motion"
+    for directory in (vault_dir, exports_dir, custom_category):
+        directory.mkdir()
+
+    monkeypatch.setattr("cos.api.PROJECTS_PATH", str(temp_projects_dir))
+    monkeypatch.setattr("cos.api.VAULT_PATH", str(vault_dir))
+    monkeypatch.setattr("cos.api.EXPORTS_PATH", str(exports_dir))
+
+    vault_response = client.get("/api/fs/list?path=00_Notes")
+    exports_response = client.get("/api/fs/list?path=02_Exports")
+    category_response = client.get("/api/fs/list?path=Motion")
+
+    assert vault_response.json()["current_path"] == str(vault_dir.resolve())
+    assert exports_response.json()["current_path"] == str(exports_dir.resolve())
+    assert category_response.json()["current_path"] == str(custom_category.resolve())
 
 
 def test_fs_open_endpoint(client, temp_projects_dir, monkeypatch):
@@ -373,6 +397,97 @@ def test_update_config_paths_endpoint(client, temp_dir, monkeypatch):
     data = resp.json()
     assert data["status"] == "success"
     assert data["config"]["vault_path"] == str(new_vault)
+
+
+def test_delete_rejects_allowed_root(client, temp_projects_dir, monkeypatch):
+    monkeypatch.setattr("cos.api.PROJECTS_PATH", str(temp_projects_dir))
+
+    response = client.post("/api/fs/delete", json={"path": str(temp_projects_dir)})
+
+    assert response.status_code == 400
+    assert temp_projects_dir.exists()
+
+
+def test_init_rejects_allowed_root(client, temp_projects_dir, monkeypatch):
+    monkeypatch.setattr("cos.api.PROJECTS_PATH", str(temp_projects_dir))
+
+    response = client.post("/api/projects/init", json={"path": str(temp_projects_dir)})
+
+    assert response.status_code == 400
+    assert not (temp_projects_dir / ".project_meta.json").exists()
+
+
+def test_recycle_failure_does_not_permanently_delete(client, temp_projects_dir, monkeypatch):
+    monkeypatch.setattr("cos.api.PROJECTS_PATH", str(temp_projects_dir))
+    target = temp_projects_dir / "keep-me.txt"
+    target.write_text("important", encoding="utf-8")
+    monkeypatch.setattr(
+        "cos.api.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1, stderr="Recycle unavailable", stdout=""),
+    )
+
+    response = client.post("/api/fs/delete", json={"path": str(target)})
+
+    assert response.status_code == 500
+    assert "Recycle Bin" in response.json()["detail"]
+    assert target.exists()
+
+
+def test_clone_rejects_unsafe_url_and_category(client, temp_projects_dir, monkeypatch):
+    monkeypatch.setattr("cos.api.PROJECTS_PATH", str(temp_projects_dir))
+
+    unsafe_url = client.post("/api/projects/clone", json={"url": "file:///tmp/repo"})
+    unsafe_category = client.post(
+        "/api/projects/clone",
+        json={"url": "owner/repo", "category": "../Outside"},
+    )
+
+    assert unsafe_url.status_code == 400
+    assert unsafe_category.status_code == 400
+
+
+def test_update_rejects_category_path_traversal(
+    client, sample_project, temp_projects_dir, monkeypatch
+):
+    monkeypatch.setattr("cos.api.PROJECTS_PATH", str(temp_projects_dir))
+    monkeypatch.setattr("cos.storage.PROJECTS_PATH", str(temp_projects_dir))
+
+    response = client.put(
+        f"/api/projects/{sample_project.name}",
+        json={"category": "../Outside", "sync_filesystem": True},
+    )
+
+    assert response.status_code == 400
+    assert sample_project.exists()
+
+
+def test_export_folder_rejects_unsafe_metadata_slug(
+    client, sample_project, temp_dir, monkeypatch
+):
+    exports_dir = temp_dir / "02_Exports"
+    monkeypatch.setattr("cos.api.PROJECTS_PATH", str(sample_project.parents[1]))
+    monkeypatch.setattr("cos.api.EXPORTS_PATH", str(exports_dir))
+    metadata_path = sample_project / ".project_meta.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["slug"] = "../Outside"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    response = client.post(f"/api/projects/{sample_project.name}/export-folder")
+
+    assert response.status_code == 400
+    assert not exports_dir.exists()
+
+
+def test_api_does_not_allow_arbitrary_cross_origin_requests(client):
+    response = client.options(
+        "/api/fs/delete",
+        headers={
+            "Origin": "https://example.invalid",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert "access-control-allow-origin" not in response.headers
 
 
 def test_storage_reclaim_endpoints(client, temp_projects_dir, monkeypatch):

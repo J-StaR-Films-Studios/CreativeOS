@@ -15,6 +15,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .console import console as default_console
+from .config import CONFIG_PATH
+from .category_config import DEFAULT_CATEGORIES, load_categories, save_categories
 
 # Setup logger
 logger = logging.getLogger('creativeos')
@@ -53,6 +55,16 @@ def is_first_run() -> bool:
     categories_path = base_path / "Config" / "categories.json"
     
     return not config_path.exists() or not categories_path.exists()
+
+
+def _current_settings() -> Dict[str, Any]:
+    """Read existing settings so re-running setup does not reset unasked options."""
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            settings = json.load(f)
+        return settings if isinstance(settings, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def run_onboarding_wizard(console: Console = None) -> Optional[Dict[str, Any]]:
@@ -103,12 +115,17 @@ def run_onboarding_wizard(console: Console = None) -> Optional[Dict[str, Any]]:
     console.print("[dim]Where should CreativeOS store your projects and files?[/dim]")
     console.print()
     
-    config: Dict[str, Any] = {}
+    existing = _current_settings()
+    path_defaults = {
+        key: existing[key] if isinstance(existing.get(key), str) and existing[key] else default
+        for key, default in DEFAULT_PATHS.items()
+    }
+    config: Dict[str, Any] = dict(path_defaults)
     
     # Projects path
     projects_path = questionary.path(
         "Projects folder (where your active projects live):",
-        default=DEFAULT_PATHS["projects_path"],
+        default=path_defaults["projects_path"],
         only_directories=True,
     ).ask()
     if projects_path:
@@ -117,7 +134,7 @@ def run_onboarding_wizard(console: Console = None) -> Optional[Dict[str, Any]]:
     # Vault path
     vault_path = questionary.path(
         "Vault folder (for Obsidian notes sync):",
-        default=DEFAULT_PATHS["vault_path"],
+        default=path_defaults["vault_path"],
         only_directories=True,
     ).ask()
     if vault_path:
@@ -126,7 +143,7 @@ def run_onboarding_wizard(console: Console = None) -> Optional[Dict[str, Any]]:
     # Archive path
     archive_path = questionary.path(
         "Archive folder (for completed projects):",
-        default=DEFAULT_PATHS["archive_path"],
+        default=path_defaults["archive_path"],
         only_directories=True,
     ).ask()
     if archive_path:
@@ -135,7 +152,7 @@ def run_onboarding_wizard(console: Console = None) -> Optional[Dict[str, Any]]:
     # Shuttle path
     shuttle_path = questionary.path(
         "Shuttle folder (for portable drive sync):",
-        default=DEFAULT_PATHS["shuttle_path"],
+        default=path_defaults["shuttle_path"],
         only_directories=True,
     ).ask()
     if shuttle_path:
@@ -144,7 +161,7 @@ def run_onboarding_wizard(console: Console = None) -> Optional[Dict[str, Any]]:
     # Exports path
     exports_path = questionary.path(
         "Exports folder (for rendered files):",
-        default=DEFAULT_PATHS["exports_path"],
+        default=path_defaults["exports_path"],
         only_directories=True,
     ).ask()
     if exports_path:
@@ -157,32 +174,47 @@ def run_onboarding_wizard(console: Console = None) -> Optional[Dict[str, Any]]:
     console.print("[dim]Which project types do you work with?[/dim]")
     console.print()
     
-    selected_categories = questionary.checkbox(
+    current_categories = load_categories()
+    categories = current_categories.get("categories", {})
+    choices = [
+        questionary.Choice(
+            f"{info['icon']} {name} - {info['desc']}",
+            value=name,
+            checked=categories.get(name, {}).get("enabled", True),
+        )
+        for name, info in CATEGORY_PRESETS.items()
+    ]
+    choices.extend(
+        questionary.Choice(
+            f"{item.get('icon', '📁')} {name} - {item.get('description', 'Custom category')}",
+            value=name,
+            checked=item.get("enabled", True),
+        )
+        for name, item in categories.items() if name not in CATEGORY_PRESETS
+    )
+    enabled_categories = questionary.checkbox(
         "Select categories to enable (space to select, enter to confirm):",
-        choices=[
-            questionary.Choice(f"{info['icon']} {cat} - {info['desc']}", checked=True)
-            for cat, info in CATEGORY_PRESETS.items()
-        ],
+        choices=choices,
     ).ask()
-    
-    # Parse selected categories
-    enabled_categories = []
-    for selection in (selected_categories or []):
-        # Extract category name from "🎬 Video - Video production projects"
-        cat_name = selection.split()[1] if " " in selection else selection
-        enabled_categories.append(cat_name)
-    
+    if not enabled_categories:
+        console.print("[yellow]Select at least one category to continue.[/yellow]")
+        return None
+
     console.print()
-    
+
     # Step 3: Default Category
     console.print("[bold cyan]Step 3: Choose Default Category[/bold cyan]")
     console.print("[dim]Which category should be used by default?[/dim]")
     console.print()
-    
+
+    previous_default = current_categories.get("default_category", "Video")
     default_category = questionary.select(
         "Default category:",
-        choices=enabled_categories or list(CATEGORY_PRESETS.keys()),
+        choices=enabled_categories,
+        default=previous_default if previous_default in enabled_categories else enabled_categories[0],
     ).ask()
+    if not default_category:
+        return None
     
     console.print()
     
@@ -238,18 +270,28 @@ def apply_configuration(config: Dict[str, Any]) -> bool:
     
     console = default_console
     base_path = Path(__file__).parent.parent.parent
-    config_dir = base_path / "Config"
+    config_dir = Path(CONFIG_PATH).parent
     config_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Create config.json
+
+    # Keep settings that the wizard does not ask about, such as downloads_path.
+    existing = _current_settings()
+    templates_path = existing.get("templates_path")
+    old_root = existing.get("root_path")
+    if not isinstance(templates_path, str) or not templates_path or (
+        isinstance(old_root, str)
+        and Path(old_root).resolve() != base_path.parent.resolve()
+        and os.path.normcase(templates_path) == os.path.normcase(str(Path(old_root) / "00_System" / "Templates"))
+    ):
+        templates_path = str(base_path / "Templates")
     main_config = {
+        **existing,
         "root_path": str(base_path.parent),
-        "projects_path": config.get("projects_path", DEFAULT_PATHS["projects_path"]),
-        "exports_path": config.get("exports_path", DEFAULT_PATHS["exports_path"]),
-        "templates_path": str(base_path / "Templates"),
-        "vault_path": config.get("vault_path", DEFAULT_PATHS["vault_path"]),
-        "shuttle_path": config.get("shuttle_path", DEFAULT_PATHS["shuttle_path"]),
-        "archive_path": config.get("archive_path", DEFAULT_PATHS["archive_path"]),
+        "projects_path": config.get("projects_path", existing.get("projects_path", DEFAULT_PATHS["projects_path"])),
+        "exports_path": config.get("exports_path", existing.get("exports_path", DEFAULT_PATHS["exports_path"])),
+        "templates_path": templates_path,
+        "vault_path": config.get("vault_path", existing.get("vault_path", DEFAULT_PATHS["vault_path"])),
+        "shuttle_path": config.get("shuttle_path", existing.get("shuttle_path", DEFAULT_PATHS["shuttle_path"])),
+        "archive_path": config.get("archive_path", existing.get("archive_path", DEFAULT_PATHS["archive_path"])),
         "version": "2.1.0",
     }
     
@@ -267,32 +309,20 @@ def apply_configuration(config: Dict[str, Any]) -> bool:
     from .config import reload_config
     reload_config()
     
-    # Create categories.json with user's selected categories
-    from .category_config import DEFAULT_CATEGORIES, save_categories
-    
-    enabled_categories = config.get("enabled_categories", [])
-    default_category = config.get("default_category", "Video")
-    
-    # Build categories dict — mark each category as enabled/disabled
-    # based on the user's selections from the onboarding wizard
-    categories = {}
-    for cat_name, cat_config in DEFAULT_CATEGORIES.items():
-        cat_entry = dict(cat_config)  # shallow copy
-        if enabled_categories:
-            cat_entry["enabled"] = cat_name in enabled_categories
-        # else: keep the default (all enabled)
-        categories[cat_name] = cat_entry
-    
-    categories_config = {
-        "version": "1.0",
-        "default_category": default_category,
-        "simple_template": "simple",
-        "categories": categories,
-        "available_icons": [
-            "🎬", "💻", "🎵", "🤖", "🎨", "📷", "✍️", "🎙️", "📚",
-            "👥", "🎮", "📱", "🔧", "📊", "🎯",
-        ],
+    # Retain custom categories and edits to built-in templates/folders.
+    categories_config = load_categories()
+    enabled_categories = config.get("enabled_categories")
+    default_category = config.get("default_category", categories_config.get("default_category", "Video"))
+    categories = {
+        name: dict(item) for name, item in categories_config.get("categories", {}).items()
     }
+    for name, item in DEFAULT_CATEGORIES.items():
+        categories.setdefault(name, dict(item))
+    if enabled_categories is not None:
+        for name, item in categories.items():
+            item["enabled"] = name in enabled_categories
+    categories_config["default_category"] = default_category
+    categories_config["categories"] = categories
     
     if not save_categories(categories_config):
         console.print("[error]❌ Failed to save categories configuration[/error]")

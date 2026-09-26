@@ -10,8 +10,6 @@ from argparse import RawTextHelpFormatter
 from . import __version__
 from .console import console
 from .config import SCRIPT_DIR
-from .commands import new, clone, init, sync, export, thumbs, clean, sort_exports, travel, resurrect, storage
-from .commands import category, setup, config_cmd, gui, app
 from .help_formatter import RichHelpAction, RichArgumentParser
 from .onboarding import is_first_run, run_onboarding_wizard, apply_configuration
 from rich.panel import Panel
@@ -178,33 +176,50 @@ def main() -> None:
     
     # First-run detection - check if setup or config command is being run
     # Skip onboarding if user is trying to run setup or config commands
-    is_setup_cmd = len(sys.argv) > 1 and sys.argv[1] in ("setup", "config", "category")
+    is_setup_cmd = len(sys.argv) > 1 and sys.argv[1].lower() in ("setup", "config", "category")
     
-    if is_first_run() and not is_setup_cmd:
+    # Global help must work before setup, even on a fresh checkout or without a TTY.
+    is_help_cmd = any(arg.lower() in ("help", "-h", "--help", "-help", "/help", "/?") for arg in sys.argv[1:])
+    if is_first_run() and not is_setup_cmd and not is_help_cmd:
+        if not sys.stdin.isatty():
+            console.print("[error]CreativeOS needs setup. Run 'cos setup' in a terminal first.[/error]")
+            sys.exit(1)
         console.print("[cyan]First run detected! Let's set up CreativeOS...[/cyan]\n")
         config = run_onboarding_wizard(console)
-        if config:
-            apply_configuration(config)
-            console.print("\n[green]Setup complete! You're ready to use CreativeOS.[/green]\n")
-        else:
-            console.print("\n[yellow]Setup cancelled. Run 'cos setup' to configure later.[/yellow]\n")
-            sys.exit(0)
+        if not config or not apply_configuration(config):
+            console.print("\n[yellow]Setup cancelled or failed. Run 'cos setup' to configure later.[/yellow]\n")
+            sys.exit(1)
+        console.print("\n[green]Setup complete! You're ready to use CreativeOS.[/green]\n")
 
     # Support both conventional help forms: `cos help storage` and
     # `cos storage help`. Convert them to argparse's normal `--help` route.
-    if len(sys.argv) == 2 and sys.argv[1] == "help":
+    if len(sys.argv) == 2 and sys.argv[1].lower() == "help":
         show_help_overview()
         sys.exit(0)
-    if len(sys.argv) > 2 and sys.argv[1] == "help":
+    if len(sys.argv) > 2 and sys.argv[1].lower() == "help":
         sys.argv = [sys.argv[0], *sys.argv[2:], "--help"]
-    elif len(sys.argv) > 2 and sys.argv[-1] == "help":
+    elif len(sys.argv) > 2 and sys.argv[-1].lower() == "help":
         sys.argv = [*sys.argv[:-1], "--help"]
 
     # Intercept `cos` (no args) or `cos -h` / `cos --help` BEFORE argparse
     # so we can show the full Rich overview instead of the terse argparse output.
-    if len(sys.argv) == 1 or (len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help")):
+    if len(sys.argv) == 1 or (len(sys.argv) == 2 and sys.argv[1].lower() in ("-h", "--help", "-help", "/help", "/?")):
         show_help_overview()
         sys.exit(0)
+
+    # Setup and config inspection must remain available without config.json.
+    first_run = is_first_run()
+    from .commands import setup, config_cmd
+    if first_run:
+        if sys.argv[1].lower() not in ("setup", "config"):
+            if is_help_cmd:
+                show_help_overview()
+                sys.exit(0)
+            console.print("[error]CreativeOS needs setup. Run 'cos setup' first.[/error]")
+            sys.exit(1)
+    else:
+        from .commands import new, clone, init, sync, export, thumbs, clean, sort_exports, travel, resurrect, storage
+        from .commands import category, gui, app
 
     parser = RichArgumentParser(
         prog="cos",
@@ -228,29 +243,40 @@ def main() -> None:
         parser_class=RichArgumentParser
     )
 
-    # Register all command parsers
-    new.add_parser(subparsers)
-    clone.add_parser(subparsers)
-    init.add_parser(subparsers)
-    export.add_parser(subparsers)
-    sync.add_parser(subparsers)
-    thumbs.add_parser(subparsers)
-    clean.add_parser(subparsers)
-    sort_exports.add_parser(subparsers)
-    travel.add_parser(subparsers)
-    resurrect.add_parser(subparsers)
-    storage.add_parser(subparsers)
-    # New commands for category management and configuration
-    gui.add_parser(subparsers)
-    app.add_parser(subparsers)
-    category.add_parser(subparsers)
+    # Only config-independent parsers are loaded until setup is complete.
+    if not first_run:
+        new.add_parser(subparsers)
+        clone.add_parser(subparsers)
+        init.add_parser(subparsers)
+        export.add_parser(subparsers)
+        sync.add_parser(subparsers)
+        thumbs.add_parser(subparsers)
+        clean.add_parser(subparsers)
+        sort_exports.add_parser(subparsers)
+        travel.add_parser(subparsers)
+        resurrect.add_parser(subparsers)
+        storage.add_parser(subparsers)
+        gui.add_parser(subparsers)
+        app.add_parser(subparsers)
+        category.add_parser(subparsers)
     setup.add_parser(subparsers)
     config_cmd.add_parser(subparsers)
 
     args = parser.parse_args()
-    args.category_flag_passed = "-c" in sys.argv or "--category" in sys.argv
+    args.category_flag_passed = any(
+        arg.lower() in ("-c", "--category", "-category", "--type", "-type")
+        or arg.lower().startswith(("--category=", "-category=", "--type=", "-type="))
+        for arg in sys.argv
+    )
 
     # Route commands to their handlers
+    if first_run:
+        if args.command == "setup":
+            setup.cmd_setup(args)
+        else:
+            config_cmd.cmd_config(args)
+        return
+
     if args.command == "new":             new.cmd_new(args)
     elif args.command == "clone":         clone.cmd_clone(args)
     elif args.command == "init":          init.cmd_init(args)

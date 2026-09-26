@@ -97,6 +97,7 @@ Examples:
     )
     review.add_argument(
         "--sort",
+        type=str.lower,
         choices=("size", "updated", "created", "reclaimable", "media"),
         default="size",
         help="Sort the table by this field (default: size).",
