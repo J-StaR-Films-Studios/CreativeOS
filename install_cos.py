@@ -1,80 +1,106 @@
+"""Install this CreativeOS checkout for Windows shells.
+
+Run with `python install_cos.py` from the repository root. The installer does
+not edit the user PATH or replace configuration without asking first.
+"""
+
+from __future__ import annotations
+
+import argparse
 import os
-import json
-import datetime
+import shutil
+import subprocess
+import sys
+import venv
+from datetime import datetime
+from pathlib import Path
 
-# --- CONFIGURATION ---
-# CHANGE THIS to where you actually want the root to be.
-# Since you are on the 2TB SSD, let's assume it is C: or D:
-ROOT_DIR = os.getcwd()  # Uses the current folder you run the script in
 
-# The Structure We Agreed On
-STRUCTURE = {
-    "00_System": ["Scripts", "Config", "Templates"],
-    "01_Projects": ["Video", "Code", "AI", "Music", "Clients"],
-    "02_Exports": [], # Will be populated by year/month logic later
-    "03_Vault": ["00_Dashboard", "01_Project_Links", "02_Journal"],
-    "04_Global_Assets": ["Thumbnails_Mirror"]
-}
+ROOT = Path(__file__).resolve().parent
+BIN = ROOT / "00_System" / "Bin"
+ENV = ROOT / ".cos-venv"
+CONFIG = ROOT / "00_System" / "Config"
 
-# The Master Config File
-CONFIG_DATA = {
-    "root_path": ROOT_DIR,
-    "projects_path": os.path.join(ROOT_DIR, "01_Projects"),
-    "exports_path": os.path.join(ROOT_DIR, "02_Exports"),
-    "templates_path": os.path.join(ROOT_DIR, "00_System", "Templates"),
-    "vault_path": os.path.join(ROOT_DIR, "03_Vault"),
-    "version": "1.0"
-}
 
-# The Video Template We Agreed On
-TEMPLATE_VIDEO = {
-    "00_Notes": ["Idea.md", "Script.md", "Metadata.md", "Tasks.md"],
-    "01_Footage": ["A-Roll", "B-Roll", "Screen", "Audio", "Misc"],
-    "02_Assets": ["Graphics", "Thumbnails", "Music", "SFX"],
-    "03_Resolve": ["Timelines", "Cache", "Subtitles"],
-    "04_Previews": [],
-    "99_Archive": []
-}
+def ask(message: str, default: bool = False) -> bool:
+    suffix = "[Y/n]" if default else "[y/N]"
+    answer = input(f"{message} {suffix} ").strip().lower()
+    return default if not answer else answer in {"y", "yes"}
 
-def create_structure(base, structure):
-    for folder, subfolders in structure.items():
-        path = os.path.join(base, folder)
-        os.makedirs(path, exist_ok=True)
-        print(f"✅ Created: {folder}")
-        for sub in subfolders:
-            os.makedirs(os.path.join(path, sub), exist_ok=True)
 
-def create_template(name, structure):
-    template_path = os.path.join(ROOT_DIR, "00_System", "Templates", name)
-    os.makedirs(template_path, exist_ok=True)
-    
-    # Create structure.json for the template
-    with open(os.path.join(template_path, "structure.json"), "w") as f:
-        json.dump(structure, f, indent=4)
-    
-    print(f"⚡ Created Template: {name}")
+def add_user_path(directory: Path) -> None:
+    import winreg
 
-def install():
-    print(f"🚀 Initializing CreativeOS — Your Creative Nervous System at: {ROOT_DIR}")
-    
-    # 1. Create Main Folders
-    create_structure(ROOT_DIR, STRUCTURE)
-    
-    # 2. Write Config File
-    config_path = os.path.join(ROOT_DIR, "00_System", "Config", "config.json")
-    with open(config_path, "w") as f:
-        json.dump(CONFIG_DATA, f, indent=4)
-    print(f"🧠 System Config written to: {config_path}")
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
+        try:
+            current, value_type = winreg.QueryValueEx(key, "Path")
+        except FileNotFoundError:
+            current, value_type = "", winreg.REG_EXPAND_SZ
+        existing = [part for part in current.split(";") if part]
+        target = os.path.normcase(os.path.normpath(str(directory)))
+        if any(os.path.normcase(os.path.normpath(os.path.expandvars(part))) == target for part in existing):
+            print("COS command directory is already on the user PATH.")
+            return
+        new_value = ";".join([*existing, str(directory)])
+        winreg.SetValueEx(key, "Path", 0, value_type, new_value)
+    import ctypes
 
-    # 3. Install Video Template
-    create_template("video_project", TEMPLATE_VIDEO)
-    
-    # 4. Create Export Year Folder (Current Year)
-    current_year = datetime.datetime.now().strftime("%Y")
-    os.makedirs(os.path.join(ROOT_DIR, "02_Exports", current_year), exist_ok=True)
-    
-    print("\n✨ SYSTEM INSTALLED SUCCESSFULLY.")
-    print("You can now move your files into these folders.")
+    notify = ctypes.windll.user32.SendMessageTimeoutW
+    notify.argtypes = (ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_wchar_p,
+                       ctypes.c_uint, ctypes.c_uint, ctypes.POINTER(ctypes.c_size_t))
+    notify.restype = ctypes.c_void_p
+    result = ctypes.c_size_t()
+    if not notify(0xFFFF, 0x1A, None, "Environment", 0x0002, 5000, ctypes.byref(result)):
+        print("PATH saved, but Windows did not refresh it. Sign out and back in if a new terminal cannot find `cos`.")
+    else:
+        print("Added COS command directory to the user PATH. Open a new terminal to use `cos`.")
+
+
+def main() -> int:
+    if os.name != "nt":
+        print("This installer supports Windows only. No changes made.", file=sys.stderr)
+        return 1
+    if not sys.stdin.isatty():
+        print("Installation needs an interactive terminal for setup and PATH consent.", file=sys.stderr)
+        return 1
+
+    print(f"Installing CreativeOS from {ROOT}")
+    python = ENV / "Scripts" / "python.exe"
+    if not python.exists():
+        venv.create(ENV, with_pip=True)
+    command = ENV / "Scripts" / "cos.exe"
+    subprocess.run([str(python), "-m", "pip", "install", "-e", str(ROOT)], check=True)
+
+    print("\nSetup configures project and vault locations.")
+    existing = [CONFIG / name for name in ("config.json", "categories.json") if (CONFIG / name).exists()]
+    if existing:
+        print("Existing configuration found. Setup will replace it only after you confirm in the wizard.")
+    if ask("Run the setup wizard now?", default=True):
+        if existing:
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            for path in existing:
+                backup = path.with_name(f"{path.name}.{stamp}.bak")
+                if backup.exists():
+                    raise FileExistsError(f"Backup already exists: {backup}")
+                shutil.copy2(path, backup)
+                print(f"Saved backup: {backup}")
+        subprocess.run([str(command), "setup"], check=True)
+    else:
+        print("Skipped setup. Run `cos setup` before creating projects.")
+
+    print(f"\nCommand directory: {BIN}")
+    if ask("Add this directory to your user PATH for PowerShell, cmd and Git Bash?"):
+        add_user_path(BIN)
+    else:
+        print("PATH unchanged. Use the launcher in 00_System/Bin or add that directory later.")
+    print("Installation finished. Test with `cos --help` in a new terminal.")
+    return 0
+
 
 if __name__ == "__main__":
-    install()
+    argparse.ArgumentParser(description=__doc__).parse_args()
+    try:
+        raise SystemExit(main())
+    except (OSError, subprocess.CalledProcessError) as error:
+        print(f"Installation failed: {error}", file=sys.stderr)
+        raise SystemExit(1) from error

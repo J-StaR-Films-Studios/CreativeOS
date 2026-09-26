@@ -3,6 +3,7 @@
 /*
 
 # --- ALLOWLIST (Resurrect these specific items) ---
+!/.agents/
 !/00_System/
 !/README.md
 !/USER MANUAL.md

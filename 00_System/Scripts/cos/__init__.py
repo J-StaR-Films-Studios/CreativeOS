@@ -6,6 +6,11 @@ One CLI to rule your entire creative workflow.
 __version__ = "2.1.0"
 __author__ = "J Star Films"
 
-from .cli import main
+def main() -> None:
+    """Load the CLI only when invoked so first-run help works without config."""
+    from .cli import main as cli_main
+
+    cli_main()
+
 
 __all__ = ["main", "__version__"]

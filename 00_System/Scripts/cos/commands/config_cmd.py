@@ -205,7 +205,7 @@ def cmd_config_validate(args: argparse.Namespace) -> None:
     config_path = Path(CONFIG_PATH)
     if not config_path.exists():
         console.print("[error]❌ config.json not found[/error]")
-        return
+        raise SystemExit(1)
     
     # Load and validate config.json
     try:
@@ -213,10 +213,10 @@ def cmd_config_validate(args: argparse.Namespace) -> None:
             config = json.load(f)
     except json.JSONDecodeError as e:
         console.print(f"[error]❌ Invalid JSON in config.json: {e}[/error]")
-        return
+        raise SystemExit(1) from e
     except IOError as e:
         console.print(f"[error]❌ Could not read config.json: {e}[/error]")
-        return
+        raise SystemExit(1) from e
     
     # Check required keys
     required_keys = ["projects_path", "templates_path"]
@@ -253,6 +253,7 @@ def cmd_config_validate(args: argparse.Namespace) -> None:
         for issue in issues:
             console.print(f"  [red]•[/red] {issue}")
         logger.warning(f"Configuration validation failed with {len(issues)} issues")
+        raise SystemExit(1)
     else:
         console.print("[success]Configuration is valid![/success]")
         logger.info("Configuration validation passed")

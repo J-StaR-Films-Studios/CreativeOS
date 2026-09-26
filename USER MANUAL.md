@@ -12,17 +12,13 @@ CreativeOS requires **Python 3.10+** and is managed through the `cos` CLI. To ge
 
 1. Ensure you have [Python 3.10+](https://www.python.org/downloads/) installed on your system.
 
-2. Install the required dependencies. CreativeOS uses [Rich](https://github.com/Textualize/rich) for beautiful terminal output:
+2. On Windows, run `python install_cos.py` from the CreativeOS checkout. It creates an isolated Python environment, installs the CLI, and offers setup. It asks before adding `00_System/Bin` to your user PATH. Restart your terminal after accepting, then use `cos` in PowerShell, cmd, or Git Bash.
 
-   ```
-   pip install -r requirements.txt
-   ```
-
-3. The CLI can be run via the `cos.bat` batch file located in the `00_System/Scripts/` directory, or installed as a package with `pip install -e .` for global `cos` access.
+3. If you skip the PATH change, run the launcher directly from `00_System/Bin`: `cos.bat` in PowerShell or cmd, or `cos` in Git Bash. You can also install into an existing Python environment with `python -m pip install -e .` and put that environment's command directory on PATH.
 
 ### Configuration
 
-CreativeOS relies on a central configuration file located at `00_System/Config/config.json`. This file contains all the necessary paths and settings for the system to function properly. The script will exit if this configuration file is missing, so ensure it is present and correctly configured.
+CreativeOS reads `00_System/Config/config.json` for its paths. The checkout includes a sample configuration, which may point to another user's directories. The Windows installer offers to run `cos setup` and saves backups of any existing configuration before opening the wizard. Re-running setup starts with your current paths and categories and keeps settings the wizard does not ask about, such as `downloads_path`. If you skip setup, inspect `cos config show` and run `cos config validate` before creating projects. The validation command exits with status 1 when it finds problems.
 
 The key paths defined in the configuration file are:
 

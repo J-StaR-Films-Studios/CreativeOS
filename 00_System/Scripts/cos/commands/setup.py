@@ -87,9 +87,9 @@ def cmd_setup_full() -> None:
     ))
     
     config = run_onboarding_wizard(console)
-    if config:
-        apply_configuration(config)
-        logger.info("Setup wizard completed successfully")
+    if not config or not apply_configuration(config):
+        raise SystemExit(1)
+    logger.info("Setup wizard completed successfully")
 
 
 def cmd_setup_paths() -> None:

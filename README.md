@@ -47,19 +47,15 @@ Whether you're editing a YouTube video, writing code, producing a podcast, or de
 - **Python 3.10+** — [Download Python](https://www.python.org/downloads/)
 - **pip** — Comes with Python
 
-### Quick Install
+### Quick Install (Windows)
 
 ```bash
-# Clone the repository
 git clone https://github.com/JStaRFilms/CreativeOSFolder.git
 cd CreativeOSFolder
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the setup wizard
-python -m cos.cli setup
+python install_cos.py
 ```
+
+The installer creates an isolated `.cos-venv`, installs the CLI from this checkout, and offers to run setup. It asks before adding `00_System/Bin` to your user PATH. Open a new PowerShell, cmd, or Git Bash terminal after accepting the PATH change, then run `cos --help` and `cos config validate`. If you decline, run `00_System/Bin/cos.bat` from PowerShell or cmd, or `00_System/Bin/cos` from Git Bash. The repository contains example configuration files, so the installer offers setup even if configuration files already exist; it backs them up before opening the wizard. When re-running setup, the wizard pre-fills current paths and categories and keeps settings it does not ask about. It does not overwrite configuration unless you confirm setup in the wizard.
 
 ### Manual Configuration
 
@@ -83,12 +79,7 @@ Edit `config.json` with your paths:
 
 ### Windows Integration
 
-Add `cos.bat` to your PATH for global access:
-
-```batch
-# The batch file uses relative paths automatically
-# Just add 00_System\Scripts to your PATH environment variable
-```
+`install_cos.py` can add `00_System/Bin` to your user PATH with permission. That directory contains a `cos` launcher for Git Bash and `cos.bat` for PowerShell and cmd. The older `00_System/Scripts/cos.bat` still works. Installing in another Python environment with `python -m pip install -e .` also provides a `cos` command when that environment is on PATH.
 
 ---
 
@@ -365,7 +356,8 @@ Examples:
 ### `cos sync` — Bidirectional Sync
 
 ```bash
-cos sync
+cos sync --dry-run   # Preview copies and updates without changing project/vault files or sync state
+cos sync             # Apply the changes
 
 Synchronizes 00_Notes folders between projects and Obsidian vault:
   • New in Project → Push to Vault

@@ -4,6 +4,7 @@
 
 # Source/config/docs should stay stable in diffs.
 *.py text eol=lf
+/00_System/Bin/cos text eol=lf
 *.md text eol=lf
 *.json text eol=lf
 *.toml text eol=lf

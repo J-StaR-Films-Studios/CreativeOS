@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Git Bash entry point; PowerShell and cmd use cos.bat beside this file.
+bin_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root_dir="$(cd "$bin_dir/../.." && pwd)"
+if [[ -x "$root_dir/.cos-venv/Scripts/cos.exe" ]]; then
+    exec "$root_dir/.cos-venv/Scripts/cos.exe" "$@"
+fi
+exec python "$root_dir/00_System/Scripts/manage.py" "$@"

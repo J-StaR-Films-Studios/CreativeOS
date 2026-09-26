@@ -1405,6 +1405,11 @@ def transfer_fs(req: TransferRequest) -> dict[str, Any]:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Source path does not exist: {src_safe}",
         )
+    if _is_allowed_root(src_safe):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot transfer a root system/storage directory",
+        )
 
     # Determine final destination target
     if dst_safe.is_dir():
@@ -1426,6 +1431,13 @@ def transfer_fs(req: TransferRequest) -> dict[str, Any]:
         while final_dest.exists():
             counter += 1
             final_dest = final_dest.parent / f"{stem}_copy_{counter}{suffix}"
+
+    final_dest = _check_path_allowed(final_dest)
+    if src_safe.is_dir() and src_safe in final_dest.parents:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot transfer a directory into itself",
+        )
 
     try:
         final_dest.parent.mkdir(parents=True, exist_ok=True)
