@@ -150,8 +150,8 @@ def cmd_clone(args: argparse.Namespace) -> None:
     console.print(Panel(info_table, title="⬇️  Cloning Repository", border_style="cyan"))
 
     try:
-        with console.status("[bold cyan]Cloning...[/bold cyan]"):
-            subprocess.run(["git", "clone", "--", url, target_dir], check=True)
+        # Let Git own the terminal line for its percentage, size, and transfer rate.
+        subprocess.run(["git", "clone", "--progress", "--", url, target_dir], check=True)
     except Exception as e:
         console.print(f"[error]❌ Git Clone failed: {e}[/error]")
         return
