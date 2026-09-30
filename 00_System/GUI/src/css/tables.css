@@ -80,6 +80,11 @@
   transition: width 0.4s ease;
 }
 
+.segment-windows {
+  background-color: var(--color-primary);
+  transition: width 0.4s ease;
+}
+
 .storage-insights {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -112,6 +117,194 @@
 .insight-sub {
   font-size: 0.7rem;
   color: var(--text-muted);
+}
+
+.windows-cleanup-panel {
+  margin-bottom: 1.25rem;
+  padding: 1rem 1.25rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+.windows-cleanup-heading,
+.windows-cleanup-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.windows-cleanup-heading h2 {
+  margin: 0 0 0.25rem;
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.windows-cleanup-total {
+  margin-left: 0.45rem;
+  color: var(--color-primary);
+  font-size: 0.9rem;
+}
+
+.windows-cleanup-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.windows-cleanup-panel p,
+.windows-cleanup-row small {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.windows-cleanup-heading p,
+.windows-cleanup-guidance p {
+  margin: 0;
+}
+
+.windows-cleanup-status {
+  margin: 0;
+}
+
+.windows-cleanup-row {
+  border-top: 1px solid var(--border-subtle);
+  padding: 0.6rem 0.35rem;
+}
+
+.windows-cleanup-row:has(input:checked) {
+  background: var(--color-primary-light);
+}
+
+.windows-cleanup-row input {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  accent-color: var(--color-primary);
+}
+
+.windows-cleanup-row > div:nth-child(2) {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.windows-cleanup-row strong {
+  color: var(--text-primary);
+  font-size: 0.82rem;
+}
+
+.windows-cleanup-path {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.73rem;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.windows-cleanup-size {
+  min-width: 115px;
+  text-align: right;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+
+.windows-cleanup-size small {
+  display: block;
+}
+
+.windows-cleanup-row .btn {
+  flex-shrink: 0;
+}
+
+#clear-windows-btn[hidden] {
+  display: none;
+}
+
+.windows-cleanup-guidance {
+  border-top: 1px solid var(--border-subtle);
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.windows-cleanup-guidance summary {
+  cursor: pointer;
+}
+
+.windows-cleanup-guidance p,
+.windows-cleanup-tools {
+  margin-top: 0.65rem;
+}
+
+.windows-cleanup-tools {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.windows-cleanup-job-pill {
+  bottom: 4.75rem;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+}
+
+.windows-cleanup-job-pill:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.windows-job-pill-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  max-width: 220px;
+}
+
+.windows-job-pill-copy strong {
+  font-size: 0.75rem;
+}
+
+.windows-job-pill-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 0.65rem;
+}
+
+#windows-cleanup-job-dialog {
+  z-index: 1100;
+}
+
+.windows-job-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.windows-job-details .reclaim-pill-progress-bar {
+  width: 100%;
+  height: 6px;
+}
+
+@media (max-width: 620px) {
+  .windows-cleanup-heading,
+  .windows-cleanup-row {
+    flex-wrap: wrap;
+  }
+  .windows-cleanup-size {
+    min-width: auto;
+    text-align: left;
+  }
 }
 
 /* Top Space Consumers Spotlight (Flattened Row List) */

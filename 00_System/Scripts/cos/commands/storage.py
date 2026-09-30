@@ -16,9 +16,10 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .. import storage as storage_index
-from ..config import SCRIPT_DIR
+from ..config import SCRIPT_DIR, logger
 from ..console import console
 from ..help_formatter import RichHelpAction
+from ..system_storage import refresh_windows_cleanup_index
 
 TASK_NAME = "CreativeOS Storage Scan"
 
@@ -299,6 +300,16 @@ def cmd_scan(args: argparse.Namespace) -> None:
     else:
         with console.status("Scanning project storage (nothing will be changed)..."):
             index = storage_index.refresh_storage_index()
+    try:
+        if args.quiet:
+            refresh_windows_cleanup_index()
+        else:
+            with console.status("Scanning Windows cleanup locations..."):
+                refresh_windows_cleanup_index()
+    except OSError as exc:
+        logger.warning("Windows cleanup inventory could not be saved: %s", exc)
+        if not args.quiet:
+            console.print(f"[warning]Windows cleanup scan failed: {exc}[/warning]")
     if not args.quiet:
         console.print(
             f"[success]Storage index updated: {index['project_count']} projects, "

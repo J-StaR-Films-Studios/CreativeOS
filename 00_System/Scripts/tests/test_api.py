@@ -1,5 +1,7 @@
 import json
+import time
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +22,8 @@ def test_health_endpoint(client):
     assert "version" in data
     assert "projects_path" in data
     assert "managed" in data
+    assert data["windows_cleanup_cached"] is True
+    assert data["windows_cleanup_jobs"] is True
 
 
 def test_heartbeat_and_leave_endpoints(client):
@@ -71,6 +75,128 @@ def test_storage_endpoint(client):
     assert "projects" in data
 
 
+def test_windows_cleanup_endpoint(client, monkeypatch):
+    expected = {"supported": False, "scanned_at": None, "locations": []}
+    monkeypatch.setattr("cos.api.load_windows_cleanup_index", lambda: expected)
+    monkeypatch.setattr("cos.api.refresh_windows_cleanup_index", lambda: expected)
+    response = client.get("/api/storage/windows-cleanup")
+    assert response.status_code == 200
+    assert response.json() == expected
+    assert client.post("/api/storage/windows-cleanup/refresh").json() == expected
+
+
+def test_windows_cleanup_api_reads_saved_snapshot_without_rescanning(client, temp_dir, monkeypatch):
+    from cos import system_storage
+
+    monkeypatch.setattr(system_storage.sys, "platform", "win32")
+    monkeypatch.setattr(system_storage, "WINDOWS_CLEANUP_INDEX_PATH", str(temp_dir / "windows_index.json"))
+    user_temp = temp_dir / "local" / "Temp"
+    user_temp.mkdir(parents=True)
+    sample = user_temp / "cache.bin"
+    sample.write_bytes(b"first")
+    monkeypatch.setenv("TEMP", str(user_temp))
+    monkeypatch.setenv("LOCALAPPDATA", str(temp_dir / "local"))
+    monkeypatch.setenv("SystemRoot", str(temp_dir / "windows"))
+
+    assert client.get("/api/storage/windows-cleanup").json()["scanned_at"] is None
+    scan = client.post("/api/storage/windows-cleanup/refresh")
+    assert scan.status_code == 200
+    assert scan.json()["locations"][0]["size_bytes"] == 5
+    sample.write_bytes(b"changed contents")
+    assert client.get("/api/storage/windows-cleanup").json()["locations"][0]["size_bytes"] == 5
+    assert client.get("/api/storage").json()["windows_cleanup"]["locations"][0]["size_bytes"] == 5
+    assert client.post("/api/storage/windows-cleanup/refresh").json()["locations"][0]["size_bytes"] == 16
+
+
+def test_windows_cleanup_clear_endpoint_validates_ids(client, monkeypatch):
+    def fake_clear(ids):
+        if ids != ["user-temp"]:
+            raise ValueError("Invalid selection")
+        return {"results": [{"id": ids[0], "status": "cleared", "removed_bytes": 5}]}
+
+    monkeypatch.setattr("cos.api.clear_windows_cleanup", fake_clear)
+    monkeypatch.setattr("cos.api.refresh_windows_cleanup_index", lambda: {"locations": []})
+    assert client.post("/api/storage/windows-cleanup/clear", json={"ids": []}).status_code == 422
+    assert client.post("/api/storage/windows-cleanup/clear", json={"ids": ["bad"]}).status_code == 400
+    response = client.post("/api/storage/windows-cleanup/clear", json={"ids": ["user-temp"]})
+    assert response.status_code == 200
+    assert response.json()["results"][0]["removed_bytes"] == 5
+    assert response.json()["inventory"] == {"locations": []}
+
+
+def test_cleanup_returns_deletion_result_if_cache_save_fails(client, monkeypatch):
+    calls = []
+
+    def clear(ids):
+        calls.extend(ids)
+        return {"results": [{"id": ids[0], "removed_bytes": 4, "skipped": 0}]}
+
+    def failed_refresh():
+        raise OSError("disk full")
+
+    monkeypatch.setattr("cos.api.clear_windows_cleanup", clear)
+    monkeypatch.setattr("cos.api.refresh_windows_cleanup_index", failed_refresh)
+    response = client.post("/api/storage/windows-cleanup/clear", json={"ids": ["user-temp"]})
+    assert response.status_code == 200
+    assert response.json()["results"][0]["removed_bytes"] == 4
+    assert "cache_error" in response.json()
+    assert calls == ["user-temp"]
+
+
+def test_windows_cleanup_job_runs_without_blocking_and_rejects_overlap(client, monkeypatch):
+    started = Event()
+    release = Event()
+
+    def fake_clear(ids, on_progress):
+        on_progress({"location": "User temporary files", "current": 1, "total": 1,
+                     "processed_files": 5, "removed_bytes": 5, "removed_files": 5})
+        started.set()
+        assert release.wait(4)
+        return {"results": [{"id": ids[0], "removed_bytes": 5, "skipped": 0}]}
+
+    monkeypatch.setattr("cos.api._WINDOWS_CLEANUP_JOB", None)
+    monkeypatch.setattr("cos.api.validate_windows_cleanup_ids", lambda ids: {"user-temp": ("Temp", Path("C:/Temp"))})
+    monkeypatch.setattr("cos.api.load_windows_cleanup_index", lambda: {
+        "locations": [{"id": "user-temp", "file_count": 10}]
+    })
+    monkeypatch.setattr("cos.api.clear_windows_cleanup", fake_clear)
+    monkeypatch.setattr("cos.api.refresh_windows_cleanup_index", lambda: {"scanned_at": "now", "locations": []})
+    try:
+        response = client.post("/api/storage/windows-cleanup/job", json={"ids": ["user-temp"]})
+        assert response.status_code == 202
+        assert started.wait(2)
+        progress = client.get("/api/storage/windows-cleanup/job").json()
+        assert progress["status"] == "running"
+        assert progress["processed_files"] == 5
+        assert progress["estimated_files"] == 10
+        assert client.post("/api/storage/windows-cleanup/job", json={"ids": ["user-temp"]}).status_code == 409
+        assert client.post("/api/storage/windows-cleanup/clear", json={"ids": ["user-temp"]}).status_code == 409
+        assert client.get("/api/health").status_code == 200
+    finally:
+        release.set()
+
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        completed = client.get("/api/storage/windows-cleanup/job").json()
+        if completed["status"] == "complete":
+            break
+        time.sleep(0.02)
+    assert completed["status"] == "complete"
+    assert completed["inventory"]["scanned_at"] == "now"
+    assert completed["results"][0]["removed_bytes"] == 5
+
+
+def test_windows_cleanup_tools_use_fixed_commands(client, monkeypatch):
+    launched = []
+    monkeypatch.setattr("cos.api.sys.platform", "win32")
+    monkeypatch.setattr("cos.api.subprocess.Popen", lambda command: launched.append(command))
+    monkeypatch.setattr("cos.api.os.startfile", lambda address: launched.append(address))
+    assert client.post("/api/storage/windows-cleanup/tool", json={"tool": "disk-cleanup"}).status_code == 200
+    assert client.post("/api/storage/windows-cleanup/tool", json={"tool": "storage-settings"}).status_code == 200
+    assert client.post("/api/storage/windows-cleanup/tool", json={"tool": "arbitrary"}).status_code == 422
+    assert launched == [["cleanmgr.exe"], "ms-settings:storagesense"]
+
+
 def test_create_project_and_validation(client, temp_projects_dir, monkeypatch):
     monkeypatch.setattr("cos.commands.new.PROJECTS_PATH", str(temp_projects_dir))
     monkeypatch.setattr("cos.config.PROJECTS_PATH", str(temp_projects_dir))
@@ -112,6 +238,7 @@ def test_storage_refresh_endpoint(client, temp_projects_dir, temp_dir, monkeypat
     monkeypatch.setattr("cos.config.PROJECTS_PATH", str(temp_projects_dir))
     monkeypatch.setattr("cos.api.PROJECTS_PATH", str(temp_projects_dir))
     monkeypatch.setattr("cos.storage.STORAGE_INDEX_PATH", str(test_index))
+    monkeypatch.setattr("cos.api.refresh_windows_cleanup_index", lambda: {"locations": []})
 
     response = client.post("/api/storage/refresh")
     assert response.status_code == 200

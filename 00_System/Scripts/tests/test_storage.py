@@ -1,11 +1,15 @@
 """Tests for the cached, non-destructive storage inventory."""
 
+import argparse
 import json
 import os
 import time
 from pathlib import Path
 
-from cos import storage
+import pytest
+
+from cos import storage, system_storage
+from cos.commands import storage as storage_command
 
 
 def _create_project(root: Path, name: str = "Storage Project") -> Path:
@@ -21,6 +25,183 @@ def _create_project(root: Path, name: str = "Storage Project") -> Path:
         encoding="utf-8",
     )
     return project
+
+
+def test_windows_cleanup_scan_is_read_only_and_skips_links(temp_dir, monkeypatch):
+    monkeypatch.setattr(system_storage.sys, "platform", "win32")
+    local = temp_dir / "local"
+    windows = temp_dir / "windows"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv("TEMP", str(local / "Temp"))
+    monkeypatch.setenv("SystemRoot", str(windows))
+    user_temp = local / "Temp"
+    user_temp.mkdir(parents=True)
+    (user_temp / "nested").mkdir()
+    (user_temp / "nested" / "cache.bin").write_bytes(b"12345")
+    outside = temp_dir / "outside"
+    outside.mkdir()
+    (outside / "keep.bin").write_bytes(b"outside")
+    (user_temp / "link").symlink_to(outside, target_is_directory=True)
+
+    result = system_storage.scan_windows_cleanup()
+    by_id = {item["id"]: item for item in result["locations"]}
+
+    assert result["supported"] is True
+    assert len(by_id) == 8
+    assert by_id["user-temp"]["size_bytes"] == 5
+    assert by_id["user-temp"]["file_count"] == 1
+    assert by_id["user-temp"]["status"] == "partial"
+    assert by_id["user-temp"]["skipped"] == 1
+    assert by_id["updates"]["status"] == "missing"
+    assert (outside / "keep.bin").read_bytes() == b"outside"
+    assert (user_temp / "nested" / "cache.bin").exists()
+
+
+def test_windows_cleanup_reports_unreadable_folder(temp_dir, monkeypatch):
+    monkeypatch.setattr(system_storage.sys, "platform", "win32")
+    monkeypatch.setenv("TEMP", str(temp_dir))
+    original_scandir = system_storage.os.scandir
+
+    def denied(path):
+        if Path(path) == temp_dir:
+            raise PermissionError("denied")
+        return original_scandir(path)
+
+    monkeypatch.setattr(system_storage.os, "scandir", denied)
+    result = system_storage.scan_windows_cleanup()
+    assert result["locations"][0]["status"] == "inaccessible"
+    assert result["locations"][0]["size_bytes"] is None
+
+
+def test_clear_windows_cleanup_removes_only_selected_contents(temp_dir, monkeypatch):
+    monkeypatch.setattr(system_storage.sys, "platform", "win32")
+    local = temp_dir / "local"
+    windows = temp_dir / "windows"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv("TEMP", str(local / "Temp"))
+    monkeypatch.setenv("SystemRoot", str(windows))
+    user_temp = local / "Temp"
+    shader = local / "D3DSCache"
+    (user_temp / "nested").mkdir(parents=True)
+    shader.mkdir(parents=True)
+    (user_temp / "nested" / "cache.bin").write_bytes(b"cache")
+    (shader / "keep.bin").write_bytes(b"shader")
+    outside = temp_dir / "outside"
+    outside.mkdir()
+    (outside / "keep.bin").write_bytes(b"outside")
+    (user_temp / "link").symlink_to(outside, target_is_directory=True)
+
+    result = system_storage.clear_windows_cleanup(["user-temp"])["results"][0]
+
+    assert result["status"] == "partial"
+    assert result["removed_bytes"] == 5
+    assert result["removed_files"] == 1
+    assert result["skipped"] >= 1
+    assert user_temp.exists()
+    assert not (user_temp / "nested").exists()
+    assert (user_temp / "link").is_symlink()
+    assert (outside / "keep.bin").read_bytes() == b"outside"
+    assert (shader / "keep.bin").read_bytes() == b"shader"
+
+
+def test_clear_windows_cleanup_reports_file_progress(temp_dir, monkeypatch):
+    monkeypatch.setattr(system_storage.sys, "platform", "win32")
+    target = temp_dir / "Temp"
+    target.mkdir()
+    monkeypatch.setenv("TEMP", str(target))
+    for index in range(300):
+        (target / f"{index}.tmp").write_bytes(b"x")
+
+    updates = []
+    result = system_storage.clear_windows_cleanup(["user-temp"], on_progress=updates.append)
+
+    assert any(update["processed_files"] == 256 for update in updates)
+    assert updates[-1]["processed_files"] == 300
+    assert updates[-1]["removed_bytes"] == 300
+    assert result["results"][0]["processed_files"] == 300
+    assert not list(target.iterdir())
+
+
+def test_clear_windows_cleanup_skips_locked_files(temp_dir, monkeypatch):
+    monkeypatch.setattr(system_storage.sys, "platform", "win32")
+    monkeypatch.setenv("TEMP", str(temp_dir / "Temp"))
+    target = temp_dir / "Temp"
+    target.mkdir()
+    (target / "locked.bin").write_bytes(b"keep")
+    (target / "free.bin").write_bytes(b"remove")
+    original_unlink = Path.unlink
+
+    def unlink(path, *args, **kwargs):
+        if path.name == "locked.bin":
+            raise PermissionError("locked")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    result = system_storage.clear_windows_cleanup(["user-temp"])["results"][0]
+    assert result["status"] == "partial"
+    assert result["removed_bytes"] == 6
+    assert result["skipped"] == 1
+    assert (target / "locked.bin").exists()
+
+
+def test_clear_windows_cleanup_rejects_unknown_and_redirected_locations(temp_dir, monkeypatch):
+    monkeypatch.setattr(system_storage.sys, "platform", "win32")
+    other = temp_dir / "other"
+    other.mkdir()
+    (other / "keep.bin").write_bytes(b"keep")
+    monkeypatch.setenv("TEMP", str(temp_dir / "temp-link"))
+    (temp_dir / "temp-link").symlink_to(other, target_is_directory=True)
+
+    for ids in (["user-temp", "unknown"], ["user-temp", "user-temp"], []):
+        with pytest.raises(ValueError):
+            system_storage.clear_windows_cleanup(ids)
+
+    result = system_storage.clear_windows_cleanup(["user-temp"])["results"][0]
+    assert result["status"] == "inaccessible"
+    assert (other / "keep.bin").read_bytes() == b"keep"
+
+
+def test_windows_cleanup_unsupported(monkeypatch):
+    monkeypatch.setattr(system_storage.sys, "platform", "linux")
+    assert system_storage.scan_windows_cleanup() == {
+        "supported": False, "scanned_at": None, "locations": []
+    }
+    with pytest.raises(ValueError):
+        system_storage.clear_windows_cleanup(["user-temp"])
+
+
+def test_windows_cleanup_index_persists_and_invalidates_changed_paths(temp_dir, monkeypatch):
+    monkeypatch.setattr(system_storage.sys, "platform", "win32")
+    local = temp_dir / "local"
+    target = local / "Temp"
+    target.mkdir(parents=True)
+    (target / "cache.bin").write_bytes(b"12345")
+    monkeypatch.setenv("TEMP", str(target))
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv("SystemRoot", str(temp_dir / "windows"))
+    index_path = temp_dir / "windows_index.json"
+
+    assert system_storage.load_windows_cleanup_index(index_path)["scanned_at"] is None
+    first = system_storage.refresh_windows_cleanup_index(index_path)
+    assert first["locations"][0]["size_bytes"] == 5
+    assert system_storage.load_windows_cleanup_index(index_path) == first
+
+    (target / "cache.bin").write_bytes(b"larger file")
+    assert system_storage.load_windows_cleanup_index(index_path)["locations"][0]["size_bytes"] == 5
+    second = system_storage.refresh_windows_cleanup_index(index_path)
+    assert second["locations"][0]["size_bytes"] == 11
+    monkeypatch.setenv("TEMP", str(local / "different-temp"))
+    assert system_storage.load_windows_cleanup_index(index_path)["scanned_at"] is None
+
+
+def test_scheduled_scan_refreshes_project_and_windows_indexes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(storage_command.storage_index, "refresh_storage_index",
+                        lambda: calls.append("projects") or {"project_count": 0, "total_size": 0})
+    monkeypatch.setattr(storage_command, "refresh_windows_cleanup_index",
+                        lambda: calls.append("windows"))
+    storage_command.cmd_scan(argparse.Namespace(background=False, quiet=True))
+    assert calls == ["projects", "windows"]
 
 
 def test_inventory_measures_media_and_regenerable_folders(temp_projects_dir):

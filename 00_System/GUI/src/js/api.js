@@ -208,6 +208,7 @@ export const api = {
     method: "POST",
     body: JSON.stringify({ inbox_path }),
   }),
+  createCurrentExportMonth: () => request("/exports/month-folder", { method: "POST" }),
   cloneProject: async (payload) => {
     const res = await request("/projects/clone", {
       method: "POST",
@@ -230,10 +231,36 @@ export const api = {
     method: "POST",
   }),
 
-  createCurrentExportMonth: () => request("/exports/month-folder", { method: "POST" }),
-
   // Storage & Reclaim
   getStorage: () => request("/storage"),
+  getWindowsCleanup: () => request("/storage/windows-cleanup", {}, false),
+  refreshWindowsCleanup: async () => {
+    const data = await request("/storage/windows-cleanup/refresh", { method: "POST" });
+    const storage = cacheStore.get("storage");
+    if (storage) cacheStore.set("storage", { ...storage, windows_cleanup: data });
+    return data;
+  },
+  startWindowsCleanupJob: async (ids) => {
+    const job = await request("/storage/windows-cleanup/job", {
+      method: "POST", body: JSON.stringify({ ids }),
+    });
+    const storage = cacheStore.get("storage");
+    if (storage && job.status === "complete" && job.inventory) {
+      cacheStore.set("storage", { ...storage, windows_cleanup: job.inventory });
+    }
+    return job;
+  },
+  getWindowsCleanupJob: async () => {
+    const job = await request("/storage/windows-cleanup/job", {}, false);
+    const storage = cacheStore.get("storage");
+    if (storage && job.status === "complete" && job.inventory) {
+      cacheStore.set("storage", { ...storage, windows_cleanup: job.inventory });
+    }
+    return job;
+  },
+  openWindowsCleanupTool: (tool) => request("/storage/windows-cleanup/tool", {
+    method: "POST", body: JSON.stringify({ tool }),
+  }),
   refreshStorage: async () => {
     const res = await request("/storage/refresh", {
       method: "POST",

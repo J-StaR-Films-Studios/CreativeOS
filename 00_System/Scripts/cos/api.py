@@ -15,7 +15,8 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
@@ -74,6 +75,12 @@ from .storage import (
     stream_reclaim_bulk,
     stream_reclaim_project,
     update_project_in_storage_index,
+)
+from .system_storage import (
+    clear_windows_cleanup,
+    load_windows_cleanup_index,
+    refresh_windows_cleanup_index,
+    validate_windows_cleanup_ids,
 )
 
 app = FastAPI(
@@ -332,8 +339,12 @@ class OpenPathRequest(BaseModel):
     path: Optional[str] = Field(default="", description="Path or project name to open with native OS handler")
 
 
+class WindowsCleanupRequest(BaseModel):
+    ids: list[str] = Field(..., min_length=1, description="Selected Windows cleanup location IDs")
 
 
+class WindowsCleanupToolRequest(BaseModel):
+    tool: Literal["disk-cleanup", "storage-settings"]
 
 
 class ReclaimProjectRequest(BaseModel):
@@ -425,6 +436,8 @@ def get_health() -> dict[str, Any]:
         "archive_path": ARCHIVE_PATH,
         "shuttle_path": SHUTTLE_PATH,
         "managed": _MANAGED_MODE,
+        "windows_cleanup_cached": True,
+        "windows_cleanup_jobs": True,
     }
 
 
@@ -1930,6 +1943,7 @@ def get_storage() -> dict[str, Any]:
         **index,
         "stale_count": len(stale_list),
         "stale_days_threshold": DEFAULT_STALE_DAYS,
+        "windows_cleanup": load_windows_cleanup_index(),
     }
 
 
@@ -1938,11 +1952,148 @@ def refresh_storage() -> dict[str, Any]:
     """Trigger a full rescan of project storage and return updated inventory."""
     updated = refresh_storage_index()
     stale_list = stale_projects(updated, DEFAULT_STALE_DAYS)
+    try:
+        windows_cleanup = refresh_windows_cleanup_index()
+        windows_error = None
+    except OSError as exc:
+        logger.warning("Windows cleanup inventory could not be refreshed: %s", exc)
+        windows_cleanup = load_windows_cleanup_index()
+        windows_error = "Windows cleanup scan failed; showing the previous snapshot."
     return {
         **updated,
         "stale_count": len(stale_list),
         "stale_days_threshold": DEFAULT_STALE_DAYS,
+        "windows_cleanup": windows_cleanup,
+        "windows_cleanup_warning": windows_error,
     }
+
+
+@app.get("/api/storage/windows-cleanup")
+def get_windows_cleanup() -> dict[str, Any]:
+    """Return the last saved scan instantly; use /refresh for a live scan."""
+    return load_windows_cleanup_index()
+
+
+@app.post("/api/storage/windows-cleanup/refresh")
+def refresh_windows_cleanup() -> dict[str, Any]:
+    """Update the Windows cleanup snapshot on demand."""
+    return refresh_windows_cleanup_index()
+
+
+@app.post("/api/storage/windows-cleanup/clear")
+def clear_windows_cleanup_endpoint(req: WindowsCleanupRequest) -> dict[str, Any]:
+    """Keep the original synchronous route for existing clients."""
+    global _WINDOWS_CLEANUP_DIRECT_RUNNING
+    with _WINDOWS_CLEANUP_JOB_LOCK:
+        if _WINDOWS_CLEANUP_DIRECT_RUNNING or (
+            _WINDOWS_CLEANUP_JOB and _WINDOWS_CLEANUP_JOB["status"] == "running"
+        ):
+            raise HTTPException(status_code=409, detail="Windows cleanup is already running")
+        _WINDOWS_CLEANUP_DIRECT_RUNNING = True
+    try:
+        try:
+            result = clear_windows_cleanup(req.ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Do not turn a completed deletion into an HTTP error if saving fails.
+        try:
+            result["inventory"] = refresh_windows_cleanup_index()
+        except OSError as exc:
+            logger.warning("Windows cleanup inventory could not be saved after deletion: %s", exc)
+            result["cache_error"] = "Could not save updated sizes; scan again to refresh them."
+        return result
+    finally:
+        with _WINDOWS_CLEANUP_JOB_LOCK:
+            _WINDOWS_CLEANUP_DIRECT_RUNNING = False
+
+
+_WINDOWS_CLEANUP_JOB_LOCK = threading.Lock()
+_WINDOWS_CLEANUP_JOB: dict[str, Any] | None = None
+_WINDOWS_CLEANUP_DIRECT_RUNNING = False
+
+
+def _update_windows_cleanup_job(job_id: str, **changes: Any) -> None:
+    with _WINDOWS_CLEANUP_JOB_LOCK:
+        if _WINDOWS_CLEANUP_JOB and _WINDOWS_CLEANUP_JOB["id"] == job_id:
+            _WINDOWS_CLEANUP_JOB.update(changes)
+
+
+def _run_windows_cleanup_job(job_id: str, ids: list[str]) -> None:
+    def on_progress(progress: dict[str, Any]) -> None:
+        _update_windows_cleanup_job(job_id, **progress)
+
+    try:
+        result = clear_windows_cleanup(ids, on_progress=on_progress)
+        _update_windows_cleanup_job(job_id, phase="indexing", results=result["results"])
+        try:
+            result["inventory"] = refresh_windows_cleanup_index()
+        except OSError as exc:
+            logger.warning("Windows cleanup inventory could not be saved after deletion: %s", exc)
+            result["cache_error"] = "Could not save updated sizes; scan again to refresh them."
+        _update_windows_cleanup_job(job_id, status="complete", phase="complete", **result)
+    except Exception:
+        logger.exception("Windows cleanup job stopped unexpectedly")
+        _update_windows_cleanup_job(
+            job_id, status="error", phase="error",
+            message="Cleanup stopped unexpectedly. Rescan before trying again.",
+        )
+
+
+@app.post("/api/storage/windows-cleanup/job", status_code=status.HTTP_202_ACCEPTED)
+def start_windows_cleanup_job(req: WindowsCleanupRequest) -> dict[str, Any]:
+    """Start one managed cleanup job; the client can poll progress independently."""
+    global _WINDOWS_CLEANUP_JOB
+    try:
+        validate_windows_cleanup_ids(req.ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    snapshot = load_windows_cleanup_index()
+    estimated_files = sum(
+        item.get("file_count") or 0 for item in snapshot.get("locations", [])
+        if item.get("id") in req.ids
+    )
+    with _WINDOWS_CLEANUP_JOB_LOCK:
+        if _WINDOWS_CLEANUP_DIRECT_RUNNING or (
+            _WINDOWS_CLEANUP_JOB and _WINDOWS_CLEANUP_JOB["status"] == "running"
+        ):
+            raise HTTPException(status_code=409, detail="Windows cleanup is already running")
+        job_id = uuid4().hex
+        _WINDOWS_CLEANUP_JOB = {
+            "id": job_id, "status": "running", "phase": "deleting", "location": "Starting cleanup",
+            "current": 0, "total": len(req.ids), "processed_files": 0,
+            "estimated_files": estimated_files, "removed_bytes": 0, "removed_files": 0,
+        }
+        try:
+            threading.Thread(
+                target=_run_windows_cleanup_job, args=(job_id, req.ids.copy()),
+                daemon=True, name="creativeos-windows-cleanup",
+            ).start()
+        except RuntimeError as exc:
+            _WINDOWS_CLEANUP_JOB = None
+            raise HTTPException(status_code=500, detail="Could not start cleanup job") from exc
+        return dict(_WINDOWS_CLEANUP_JOB)
+
+
+@app.get("/api/storage/windows-cleanup/job")
+def get_windows_cleanup_job() -> dict[str, Any]:
+    with _WINDOWS_CLEANUP_JOB_LOCK:
+        return dict(_WINDOWS_CLEANUP_JOB) if _WINDOWS_CLEANUP_JOB else {"status": "idle"}
+
+
+@app.post("/api/storage/windows-cleanup/tool")
+def open_windows_cleanup_tool(req: WindowsCleanupToolRequest) -> dict[str, str]:
+    """Open a built-in Windows cleanup UI; do not select or delete files there."""
+    if sys.platform != "win32":
+        raise HTTPException(status_code=400, detail="Windows tools are only available on Windows")
+    try:
+        if req.tool == "disk-cleanup":
+            subprocess.Popen(["cleanmgr.exe"])
+        else:
+            os.startfile("ms-settings:storagesense")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not open Windows cleanup tool: {exc}") from exc
+    return {"status": "opened"}
 
 
 @app.get("/api/storage/reclaimable")

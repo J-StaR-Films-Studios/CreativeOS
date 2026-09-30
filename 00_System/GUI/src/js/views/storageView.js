@@ -4,6 +4,7 @@
 
 import { api, formatBytes, cacheStore } from "../api.js";
 import { renderStorageTable } from "../components/storageTable.js";
+import { renderWindowsCleanup } from "../components/windowsCleanup.js";
 import { openProjectInspector } from "../components/modal.js";
 import { openReclaimModal, openBulkReclaimModal } from "../components/reclaimModal.js";
 import { icons } from "../icons.js";
@@ -39,6 +40,7 @@ export async function renderStorage(container, options = {}) {
 
     <!-- Storage Visual Multi-segment Bar & Stats -->
     <div id="storage-summary-container"></div>
+    <section id="windows-cleanup-container" class="windows-cleanup-panel" aria-label="Windows cleanup locations"></section>
 
     <div class="studio-toolbar" style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;">
       <div class="search-box" style="flex: 1; min-width: 260px;">
@@ -75,6 +77,13 @@ export async function renderStorage(container, options = {}) {
     </div>
   `;
 
+  let latestStorage = cachedStorage;
+  let windowsCleanup = cachedStorage?.windows_cleanup || null;
+  const windowsPanel = renderWindowsCleanup(container.querySelector("#windows-cleanup-container"), (snapshot) => {
+    windowsCleanup = snapshot;
+    if (latestStorage) updateSummary(latestStorage);
+  });
+
   let currentSort = { key: "total_size", asc: false };
   let activeFilter = "all"; // "all" | "stale" | "reclaimable"
   let allProjects = [];
@@ -85,14 +94,18 @@ export async function renderStorage(container, options = {}) {
     const summaryContainer = document.getElementById("storage-summary-container");
     if (!summaryContainer) return;
 
-    const total = data.total_size || 0;
+    const projectTotal = data.total_size || 0;
     const media = data.media_size || 0;
     const reclaimable = data.reclaimable_size || 0;
-    const other = Math.max(0, total - media - reclaimable);
+    const other = Math.max(0, projectTotal - media - reclaimable);
+    const windowsSize = windowsCleanup?.locations?.reduce((sum, item) => sum + (item.size_bytes || 0), 0) || 0;
+    const windowsIncomplete = windowsCleanup?.locations?.some(item => item.status === "partial" || item.status === "inaccessible");
+    const total = projectTotal + windowsSize;
 
     const mediaPct = total > 0 ? ((media / total) * 100).toFixed(1) : 0;
     const reclaimablePct = total > 0 ? ((reclaimable / total) * 100).toFixed(1) : 0;
     const otherPct = total > 0 ? ((other / total) * 100).toFixed(1) : 0;
+    const windowsPct = total > 0 ? ((windowsSize / total) * 100).toFixed(1) : 0;
 
     // Update filter tab counts and stale reclaimable
     const pList = data.projects || allProjects || [];
@@ -141,12 +154,13 @@ export async function renderStorage(container, options = {}) {
         <div class="storage-bar-header">
           <div>
             <span class="storage-bar-title">Disk Allocation</span>
-            <span class="storage-bar-sub font-mono">${formatBytes(total)} Total</span>
+            <span class="storage-bar-sub font-mono" title="Indexed projects plus measured Windows caches, not whole-drive capacity">${windowsIncomplete ? '≥ ' : ''}${formatBytes(total)} measured</span>
           </div>
           <div class="storage-legend">
             <span class="legend-item"><span class="legend-dot" style="background-color: var(--color-accent-cyan);"></span> Media (${mediaPct}%)</span>
             <span class="legend-item"><span class="legend-dot" style="background-color: var(--color-warning);"></span> Reclaimable (${reclaimablePct}%)</span>
             <span class="legend-item"><span class="legend-dot" style="background-color: var(--text-primary);"></span> Workspace (${otherPct}%)</span>
+            <span class="legend-item"><span class="legend-dot" style="background-color: var(--color-primary);"></span> Windows caches (${windowsCleanup?.scanned_at ? `${windowsPct}%` : 'not scanned'})</span>
           </div>
         </div>
 
@@ -154,13 +168,14 @@ export async function renderStorage(container, options = {}) {
           <div class="segment-media" style="width: ${mediaPct}%;" title="Media: ${formatBytes(media)} (${mediaPct}%)"></div>
           <div class="segment-reclaimable" style="width: ${reclaimablePct}%;" title="Reclaimable: ${formatBytes(reclaimable)} (${reclaimablePct}%)"></div>
           <div class="segment-other" style="width: ${otherPct}%;" title="Workspace: ${formatBytes(other)} (${otherPct}%)"></div>
+          <div class="segment-windows" style="width: ${windowsPct}%;" title="Windows caches: ${formatBytes(windowsSize)} (${windowsPct}%)"></div>
         </div>
 
         <div class="storage-insights">
           <div class="storage-insight-cell">
-            <span class="insight-label">Footprint</span>
-            <span class="insight-val font-mono">${formatBytes(total)}</span>
-            <span class="insight-sub">${data.project_count || 0} projects</span>
+            <span class="insight-label">Measured Total</span>
+            <span class="insight-val font-mono">${windowsIncomplete ? '≥ ' : ''}${formatBytes(total)}</span>
+            <span class="insight-sub">${data.project_count || 0} projects${windowsCleanup?.scanned_at ? ' + Windows caches' : ' only'}</span>
           </div>
           <div class="storage-insight-cell">
             <span class="insight-label">Media Assets</span>
@@ -171,6 +186,11 @@ export async function renderStorage(container, options = {}) {
             <span class="insight-label">Reclaimable</span>
             <span class="insight-val font-mono" style="color: var(--color-warning);">${formatBytes(reclaimable)}</span>
             <span class="insight-sub" style="color: var(--color-warning);">${reclaimableCount} with cache &rarr;</span>
+          </div>
+          <div class="storage-insight-cell is-clickable" id="insight-windows-card" title="Jump to Windows cleanup locations">
+            <span class="insight-label">Windows Caches</span>
+            <span class="insight-val font-mono" style="color: var(--color-primary);">${windowsCleanup?.scanned_at ? `${windowsIncomplete ? '≥ ' : ''}${formatBytes(windowsSize)}` : '—'}</span>
+            <span class="insight-sub">${windowsCleanup?.scanned_at ? `Updated ${new Date(windowsCleanup.scanned_at).toLocaleDateString()}` : 'Not scanned'} &rarr;</span>
           </div>
           <div class="storage-insight-cell is-clickable" id="insight-stale-card" title="Click to filter to Stale projects (>90d inactive)">
             <span class="insight-label">Last Indexed</span>
@@ -199,6 +219,10 @@ export async function renderStorage(container, options = {}) {
         </div>
       ` : ''}
     `;
+
+    document.getElementById("insight-windows-card")?.addEventListener("click", () => {
+      container.querySelector("#windows-cleanup-container")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
 
     // Click on stale insight card to filter
     document.getElementById("insight-stale-card")?.addEventListener("click", () => {
@@ -375,12 +399,14 @@ export async function renderStorage(container, options = {}) {
       if (hasCache) {
         categoriesConfig = cachedCats?.categories || {};
         allProjects = cachedStorage.projects || [];
+        latestStorage = cachedStorage;
         updateSummary(cachedStorage);
         renderTable();
       }
 
       api.getStorageSWR((freshStorage) => {
         allProjects = freshStorage.projects || [];
+        latestStorage = freshStorage;
         updateSummary(freshStorage);
         renderTable();
       });
@@ -417,14 +443,16 @@ export async function renderStorage(container, options = {}) {
       <span class="spinner" style="width: 14px; height: 14px; border-width: 2px; margin: 0;"></span>
       Scanning...
     `;
-    showToast("Storage rescan triggered in background...", "info");
+    showToast("Scanning projects and Windows caches...", "info");
 
     try {
       const updated = await api.refreshStorage();
       allProjects = updated.projects || [];
+      latestStorage = updated;
+      windowsPanel.showSnapshot(updated.windows_cleanup);
       updateSummary(updated);
       renderTable();
-      showToast("Storage index refreshed successfully", "success");
+      showToast(updated.windows_cleanup_warning || "Storage indexes refreshed", updated.windows_cleanup_warning ? "error" : "success");
     } catch (err) {
       showToast(`Rescan failed: ${err.message}`, "error");
     } finally {

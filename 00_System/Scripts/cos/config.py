@@ -126,6 +126,7 @@ SYNC_STATE_PATH = os.path.join(SCRIPT_DIR, "..", "..", "Config", "sync_state.jso
 PROJECT_INDEX_PATH = os.path.join(SCRIPT_DIR, "..", "..", "Config", "project_index.json")
 # Cached, read-only inventory used by `cos storage`; normal commands never scan disks.
 STORAGE_INDEX_PATH = os.path.join(SCRIPT_DIR, "..", "..", "Config", "storage_index.json")
+WINDOWS_CLEANUP_INDEX_PATH = os.path.join(SCRIPT_DIR, "..", "..", "Config", "windows_cleanup_index.json")
 
 # --- LOGGING SETUP ---
 LOG_PATH = os.path.join(SCRIPT_DIR, "..", "..", "Config", "creativeos.log")

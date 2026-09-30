@@ -313,6 +313,26 @@ files at low priority and can never archive or delete project data. Normal
 CreativeOS commands only read the small cached JSON file, so they never trigger
 a disk scan.
 
+The GUI's Storage Inventory shows a saved Windows cleanup scan beside the project
+index. It measures user/Windows temp, Prefetch, DirectX/NVIDIA/AMD shader caches,
+and Windows Update downloads. The first visit scans if no snapshot exists; later
+visits load `00_System/Config/windows_cleanup_index.json` without traversing those
+folders. **Rescan** updates it on demand. The existing optional weekly
+`cos storage schedule` task also updates it through `cos storage scan`.
+
+Select folders and confirm **Clear selected**, or clear one folder at a time. The
+confirmation closes immediately while cleanup runs in the background. A floating
+progress control shows files checked and space removed, opens a detail view, and
+lets you keep using the app. Only selected folder contents are removed; locked
+files and links are skipped. A fresh snapshot is saved afterward. The Disk Allocation strip combines measured
+project files and Windows cache files in separate categories; it does not
+represent whole-drive capacity. Cleanup rejects drive roots, configured workspace paths,
+standard user-data folders, and project metadata roots, including redirected custom temp paths.
+A partial or inaccessible scan marks the total as a lower bound. Prefetch may
+slow launches temporarily; Windows Update downloads may require admin rights. Expand the help in the panel to
+open Windows' own Disk Cleanup or Storage Settings for system-managed items.
+Restart a running desktop app after updating its backend to load new API routes.
+
 ### `cos new` — Create Project
 
 ```bash
