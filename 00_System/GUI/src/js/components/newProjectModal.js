@@ -384,6 +384,17 @@ export async function openNewProjectModal(onCreated = () => {}) {
               <input type="text" id="m-clone-name" class="win11-input font-mono" placeholder="Leave empty to use repository name" />
             </div>
           </div>
+          <div class="win11-form-row two-col">
+            <div class="win11-form-group">
+              <label class="win11-label" for="m-clone-date">Date Prefix (Optional)</label>
+              <input type="date" id="m-clone-date" class="win11-input font-mono" />
+            </div>
+            <div class="win11-form-group">
+              <label class="win11-label" for="m-clone-destination">Destination inside 01_Projects (Optional)</label>
+              <input type="text" id="m-clone-destination" class="win11-input font-mono" placeholder="e.g. Code/Clones" />
+              <span class="win11-form-hint">Relative to 01_Projects. Defaults to the selected category or client folder.</span>
+            </div>
+          </div>
 
           <div class="win11-info-banner">
             <div class="win11-banner-icon">${icons.info}</div>
@@ -410,6 +421,8 @@ export async function openNewProjectModal(onCreated = () => {}) {
         const catInp = document.getElementById("m-clone-category");
         const clientInp = document.getElementById("m-clone-client");
         const nameInp = document.getElementById("m-clone-name");
+        const dateInp = document.getElementById("m-clone-date");
+        const destinationInp = document.getElementById("m-clone-destination");
         const submitBtn = document.getElementById("m-clone-submit-btn");
 
         if (!urlInp?.value.trim()) return;
@@ -425,6 +438,8 @@ export async function openNewProjectModal(onCreated = () => {}) {
             category: catInp.value,
             client: clientInp.value.trim() || null,
             name: nameInp.value.trim() || null,
+            date: dateInp.value || null,
+            destination_subpath: destinationInp.value.trim() || null,
           };
 
           const res = await api.cloneProject(payload);
@@ -447,7 +462,7 @@ export async function openNewProjectModal(onCreated = () => {}) {
             <div class="win11-form-group flex-1">
               <label class="win11-label" for="m-adopt-path">Existing Folder Path <span class="req">*</span></label>
               <input type="text" id="m-adopt-path" class="win11-input font-mono" placeholder="C:\\Projects\\MyExistingFolder or 01_Projects\\Video\\..." required autofocus />
-              <span class="win11-form-hint">Choose a folder inside your configured Projects directory.</span>
+              <span class="win11-form-hint">Folders outside Projects stay where they are and appear in the project list.</span>
             </div>
           </div>
 
@@ -455,8 +470,9 @@ export async function openNewProjectModal(onCreated = () => {}) {
             <div class="win11-form-group">
               <label class="win11-label" for="m-adopt-category">Category</label>
               <select id="m-adopt-category" class="win11-select">
+                <option value="">Auto-detect from folder</option>
                 ${enabledCategories.map(([k]) => `
-                  <option value="${escapeHtml(k)}" ${k === defaultCategory ? 'selected' : ''}>${escapeHtml(k)}</option>
+                  <option value="${escapeHtml(k)}">${escapeHtml(k)}</option>
                 `).join("")}
               </select>
             </div>
@@ -495,6 +511,21 @@ export async function openNewProjectModal(onCreated = () => {}) {
 
         if (!pathInp?.value.trim()) return;
 
+        const path = pathInp.value.trim();
+        let confirmExternal = false;
+        if (/^(?:[a-zA-Z]:[\\/]|\/|\\\\)/.test(path)) {
+          try {
+            const config = await api.getConfig();
+            const root = (config.paths?.projects_path?.path || "").replace(/\\/g, "/").replace(/\/$/, "").toLowerCase();
+            const selected = path.replace(/\\/g, "/").toLowerCase();
+            confirmExternal = selected !== root && !selected.startsWith(`${root}/`);
+          } catch (err) {
+            showToast(`Could not verify Projects location: ${err.message}`, "error");
+            return;
+          }
+          if (confirmExternal && !window.confirm(`Adopt ${path} in place outside Projects? CreativeOS will add metadata to that folder and track it without moving its files.`)) return;
+        }
+
         if (submitBtn) {
           submitBtn.disabled = true;
           submitBtn.innerHTML = `<span class="spinner" style="width: 12px; height: 12px; border-width: 2px; margin: 0;"></span> Adopting...`;
@@ -502,10 +533,11 @@ export async function openNewProjectModal(onCreated = () => {}) {
 
         try {
           const payload = {
-            path: pathInp.value.trim(),
-            category: catInp.value,
+            path,
+            category: catInp.value || null,
             client: clientInp.value.trim() || null,
             name: nameInp.value.trim() || null,
+            confirm_external: confirmExternal,
           };
 
           const res = await api.initProject(payload);

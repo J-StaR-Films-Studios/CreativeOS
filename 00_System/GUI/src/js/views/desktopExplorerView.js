@@ -16,6 +16,7 @@
  */
 
 import { api, formatBytes } from "../api.js";
+import { findProjectForItem } from "../projectSelection.js";
 import { getCategoryIconSvg, getFileIconSvg, icons } from "../icons.js";
 import { showToast } from "../components/toast.js";
 import { toggleTheme } from "../theme.js";
@@ -1045,7 +1046,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
                       <span style="font-size: 0.75rem; color: var(--text-muted);">${p.created || '—'}</span>
                     </td>
                     <td style="padding: 0.6rem 0.85rem; text-align: right;">
-                      <button class="btn btn-primary btn-resurrect-proj" data-proj-name="${escapeHtml(p.name)}" style="font-size: 0.75rem; padding: 0.25rem 0.65rem;">
+                      <button class="btn btn-primary btn-resurrect-proj" data-proj-name="${escapeHtml(p.name)}" data-proj-path="${escapeHtml(p.path)}" style="font-size: 0.75rem; padding: 0.25rem 0.65rem;">
                         ${icons.refresh} Resurrect
                       </button>
                     </td>
@@ -1064,7 +1065,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
             btn.innerHTML = `<span class="spinner" style="width: 12px; height: 12px; border-width: 2px;"></span> Resurrecting...`;
 
             try {
-              await api.resurrectProject(projName);
+              await api.resurrectProject(btn.getAttribute("data-proj-path"));
               showToast(`Project '${projName}' resurrected to active workspace!`, "success");
               try {
                 projectsList = await api.getProjects();
@@ -1449,7 +1450,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
     selectCanvasItem(item);
 
     const isDir = item.is_dir;
-    const isProj = projectsList.find(p => p.path === item.path || p.name === item.name || p.slug === item.name);
+    const isProj = findProjectForItem(projectsList, item);
 
     menuEl.innerHTML = `
       <div class="win11-context-item" data-action="open">
@@ -1534,7 +1535,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
           showToast("Copied path to clipboard!", "success", 1200);
         } else if (action === "export-folder") {
           showToast(`Generating export folder for ${isProj.name}...`, "info", 1200);
-          api.createExportFolder(isProj.slug || isProj.name).then(res => {
+          api.createExportFolder(isProj.path || isProj.slug || isProj.name).then(res => {
             showToast(`Export folder ready at ${res.export_path}`, "success", 2000);
             if (res.export_path) {
               createNewTab(res.export_path);
@@ -1547,7 +1548,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
             confirmText: "Launch Travel",
             variant: "info",
             onConfirm: async () => {
-              const res = await api.travelProject(isProj.slug || isProj.name);
+              const res = await api.travelProject(isProj.path || isProj.slug || isProj.name);
               showToast(`Exported to Shuttle: ${res.dest_path}`, "success");
             }
           });
@@ -1562,7 +1563,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
             confirmText: "Archive",
             variant: "danger",
             onConfirm: async () => {
-              const res = await api.archiveProject(isProj.slug || item.name);
+              const res = await api.archiveProject(isProj.path || isProj.slug || item.name);
               showToast(`Archived to ${res.archive_path}`, "success");
               loadCurrentDirectory();
             }
@@ -2205,7 +2206,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
     const isDoc = [".md", ".markdown", ".txt", ".json", ".csv", ".log", ".py", ".js", ".css", ".html", ".yaml", ".yml", ".ts", ".jsx", ".tsx", ".sh", ".bat", ".toml", ".ini", ".rs", ".go"].includes(ext);
 
     // Check if this directory corresponds to a known project
-    const matchedProject = projectsList.find(p => p.path === item.path || p.name === item.name || p.slug === item.name);
+    const matchedProject = findProjectForItem(projectsList, item);
 
     let stageHtml = "";
     if (isVideo) {
@@ -2447,11 +2448,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
 
     // 2. If a project folder or project file is selected
     if (selectedItem) {
-      const selPath = (selectedItem.path || "").replace(/\//g, "\\");
-      const p = projectsList.find(proj => {
-        const projPath = (proj.path || "").replace(/\//g, "\\");
-        return selPath === projPath || proj.name === selectedItem.name || proj.slug === selectedItem.name || selPath.startsWith(projPath + "\\");
-      });
+      const p = findProjectForItem(projectsList, selectedItem, true);
       if (p) return p;
     }
 
@@ -2600,7 +2597,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
     if (activeProj) {
       try {
         showToast(`Generating export folder for ${activeProj.name}...`, "info", 1200);
-        const res = await api.createExportFolder(activeProj.slug || activeProj.name);
+        const res = await api.createExportFolder(activeProj.path || activeProj.slug || activeProj.name);
         showToast(`Export folder ready at ${res.export_path}`, "success", 2000);
         if (res.export_path) {
           createNewTab(res.export_path);
@@ -2609,7 +2606,12 @@ export async function renderDesktopExplorer(container, initialPath = "") {
         showToast(`Export folder failed: ${e.message}`, "error");
       }
     } else {
-      createNewTab("02_Exports");
+      try {
+        const res = await api.createCurrentExportMonth();
+        createNewTab(res.path);
+      } catch (e) {
+        showToast(`Export folder failed: ${e.message}`, "error");
+      }
     }
   });
 
@@ -2635,7 +2637,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
         confirmText: "Launch Travel",
         variant: "info",
         onConfirm: async () => {
-          const res = await api.travelProject(activeProj.slug || activeProj.name);
+          const res = await api.travelProject(activeProj.path || activeProj.slug || activeProj.name);
           showToast(`Exported to Shuttle: ${res.dest_path}`, "success");
         }
       });
@@ -2736,7 +2738,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
       if (activeProj) {
         try {
           showToast(`Opening export folder for ${activeProj.name}...`, "info", 1000);
-          const res = await api.createExportFolder(activeProj.slug || activeProj.name);
+          const res = await api.createExportFolder(activeProj.path || activeProj.slug || activeProj.name);
           if (res.export_path) {
             createNewTab(res.export_path);
           }
@@ -2744,7 +2746,12 @@ export async function renderDesktopExplorer(container, initialPath = "") {
           showToast(`Export folder: ${err.message}`, "error");
         }
       } else {
-        updateActiveTabPath("02_Exports");
+        try {
+          const res = await api.createCurrentExportMonth();
+          updateActiveTabPath(res.path);
+        } catch (err) {
+          showToast(`Export folder: ${err.message}`, "error");
+        }
       }
       return;
     }
@@ -2764,7 +2771,7 @@ export async function renderDesktopExplorer(container, initialPath = "") {
       if (activeModal) return;
       e.preventDefault();
       const isDir = item.is_dir;
-      const isProj = projectsList.find(p => p.path === item.path || p.name === item.name || p.slug === item.name);
+      const isProj = findProjectForItem(projectsList, item);
       const itemType = isProj ? "Project" : (isDir ? "Folder" : "File");
       openConfirmModal({
         title: `Delete ${itemType}`,

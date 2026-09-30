@@ -274,6 +274,14 @@ When running commands from within a project, CreativeOS searches for metadata:
 [projects_path]\
 ```
 
+### GUI adoption outside Projects
+
+The GUI can adopt a folder in place outside `projects_path`. For an absolute path, explicit confirmation grants access to that project folder only, without opening its parent or sibling folders. The API rejects filesystem roots, the user home root, and protected system directories. It writes `.project_meta.json` and `00_Notes/Idea.md` in the chosen folder without moving its existing files.
+
+The API records the absolute path in `config.json` under `external_projects`, a list of strings. There is no database table. Project discovery reads those explicit paths alongside the Projects tree; the storage index caches their measurements as ordinary project records. The GUI sends the absolute project path for project actions so identically named folders cannot be confused. An external project renamed through the GUI stays in its parent folder. File transfers update its registered path, or remove the registration when moving it into Projects. If registration cannot be saved, the transfer rolls back. Archiving removes its path from the list after the source is removed. Missing folders remain configured but do not appear in project lists until available again.
+
+CLI `init` behavior and projects inside `projects_path` are unchanged. GUI clones stay under `projects_path` and accept a relative destination folder.
+
 ## Commands
 
 ### Project Lifecycle Commands

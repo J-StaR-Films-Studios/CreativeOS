@@ -12,6 +12,17 @@ from ..console import console
 from ..config import DOWNLOADS_PATH
 from ..file_utils import format_path
 
+DOWNLOADS_MAPPING = {
+    "_Images": [".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".tiff", ".bmp"],
+    "_Video": [".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv"],
+    "_Audio": [".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a"],
+    "_Docs": [".pdf", ".docx", ".txt", ".xlsx", ".pptx", ".csv", ".md"],
+    "_Installers": [".exe", ".msi", ".iso", ".dmg"],
+    "_Archives": [".zip", ".rar", ".7z", ".tar", ".gz"],
+    "_Fonts": [".ttf", ".otf", ".woff", ".woff2"],
+    "_3D": [".blend", ".fbx", ".obj", ".stl", ".gltf"],
+}
+
 def add_parser(subparsers: Any) -> None:
     from ..help_formatter import RichHelpAction
 
@@ -56,17 +67,6 @@ def cmd_clean(args: argparse.Namespace) -> None:
         console.print(f"[error]❌ Error: Path not found: {target_path}[/error]")
         return
 
-    MAPPING = {
-        "_Images": [".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".tiff", ".bmp"],
-        "_Video": [".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv"],
-        "_Audio": [".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a"],
-        "_Docs": [".pdf", ".docx", ".txt", ".xlsx", ".pptx", ".csv", ".md"],
-        "_Installers": [".exe", ".msi", ".iso", ".dmg"],
-        "_Archives": [".zip", ".rar", ".7z", ".tar", ".gz"],
-        "_Fonts": [".ttf", ".otf", ".woff", ".woff2"],
-        "_3D": [".blend", ".fbx", ".obj", ".stl", ".gltf"]
-    }
-
     results_table = Table(title="Cleanup Summary", box=box.SIMPLE)
     results_table.add_column("File", style="white")
     results_table.add_column("Moved To", style="cyan")
@@ -81,7 +81,7 @@ def cmd_clean(args: argparse.Namespace) -> None:
             ext = os.path.splitext(item)[1].lower()
             target_folder = None
 
-            for folder, extensions in MAPPING.items():
+            for folder, extensions in DOWNLOADS_MAPPING.items():
                 if ext in extensions:
                     target_folder = folder
                     break

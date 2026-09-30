@@ -576,7 +576,7 @@ export function openProjectInspector(project, categoryConfig = {}, onProjectUpda
       }
 
       try {
-        const lookupKey = currentProject.relative_path || currentProject.slug || currentProject.name;
+        const lookupKey = currentProject.path || currentProject.relative_path || currentProject.slug || currentProject.name;
         const res = await api.updateProject(lookupKey, payload);
         if (res.moved) {
           showToast(`Project updated and moved to ${res.project.relative_path}`, "success");
@@ -633,7 +633,7 @@ export function openProjectInspector(project, categoryConfig = {}, onProjectUpda
         confirmText: "Launch Travel",
         variant: "info",
         onConfirm: async () => {
-          const res = await api.travelProject(currentProject.name || currentProject.slug);
+          const res = await api.travelProject(currentProject.path || currentProject.name || currentProject.slug);
           showToast(`Exported to Shuttle: ${res.dest_path}`, "success", 3000);
         },
       });
@@ -648,7 +648,7 @@ export function openProjectInspector(project, categoryConfig = {}, onProjectUpda
         confirmText: "Archive Project",
         variant: "danger",
         onConfirm: async () => {
-          const res = await api.archiveProject(currentProject.name || currentProject.slug);
+          const res = await api.archiveProject(currentProject.path || currentProject.name || currentProject.slug);
           showToast(`Project archived to ${res.archive_path}`, "success", 3000);
           closeModal();
           onProjectUpdated(null); // Signal removal
@@ -804,7 +804,7 @@ export async function openResurrectModal(onResurrected = () => {}) {
 
       container.innerHTML = `
         <div class="archived-cards-list" style="display: flex; flex-direction: column; gap: 0.5rem;">
-          ${filtered.map(p => {
+          ${filtered.map((p, index) => {
             const iconSvg = getCategoryIconSvg(p.type);
             return `
               <div class="archived-item-card" style="display: flex; align-items: center; justify-content: space-between; padding: 0.7rem 0.9rem; background: var(--badge-bg); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); gap: 1rem;">
@@ -819,7 +819,7 @@ export async function openResurrectModal(onResurrected = () => {}) {
                     </div>
                   </div>
                 </div>
-                <button class="btn btn-primary restore-action-btn" data-name="${p.name || p.slug}" style="flex-shrink: 0; padding: 0.35rem 0.75rem; font-size: 0.785rem;">
+                <button class="btn btn-primary restore-action-btn" data-index="${index}" data-name="${p.name || p.slug}" style="flex-shrink: 0; padding: 0.35rem 0.75rem; font-size: 0.785rem;">
                   ${icons.resurrect}
                   Restore
                 </button>
@@ -832,6 +832,7 @@ export async function openResurrectModal(onResurrected = () => {}) {
       container.querySelectorAll(".restore-action-btn").forEach(btn => {
         btn.addEventListener("click", () => {
           const projName = btn.getAttribute("data-name");
+          const projectPath = filtered[Number(btn.getAttribute("data-index"))].path;
           openConfirmModal({
             title: "Resurrect Project",
             message: `Restore '${projName}' back to active Projects workspace?`,
@@ -839,7 +840,7 @@ export async function openResurrectModal(onResurrected = () => {}) {
             confirmText: "Restore Project",
             variant: "info",
             onConfirm: async () => {
-              const res = await api.resurrectProject(projName);
+              const res = await api.resurrectProject(projectPath);
               showToast(`Project restored: ${res.path}`, "success", 3000);
               closeModal();
               onResurrected(res);

@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
-from .config import EXCLUDED_DIRS, PROJECTS_PATH, STORAGE_INDEX_PATH
+from .config import EXCLUDED_DIRS, PROJECTS_PATH, STORAGE_INDEX_PATH, _load_config
 from .file_utils import robust_rmtree
 
 INDEX_VERSION = 1
@@ -232,7 +232,10 @@ def inspect_project(
         "name": metadata.get("name") or project.name,
         "type": metadata.get("type") or "Unknown",
         "path": str(project),
-        "relative_path": project.relative_to(Path(projects_path or PROJECTS_PATH)).as_posix(),
+        "relative_path": (
+            project.relative_to(Path(projects_path or PROJECTS_PATH)).as_posix()
+            if project.is_relative_to(Path(projects_path or PROJECTS_PATH)) else str(project)
+        ),
         "created": created,
         "created_source": created_source,
         "last_meaningful_update": _iso(meaningful_latest) if meaningful_latest else None,
@@ -243,6 +246,14 @@ def inspect_project(
         "unreadable_files": unreadable_files,
         "reclaimable_items": reclaimable_items,
     }
+
+
+def external_project_paths() -> list[Path]:
+    """Return explicitly adopted projects outside the configured Projects tree."""
+    paths = _load_config().get("external_projects", [])
+    if not isinstance(paths, list):
+        return []
+    return [Path(path) for path in paths if isinstance(path, str) and Path(path).is_absolute()]
 
 
 def discover_projects(projects_path: str | Path | None = None) -> list[tuple[Path, dict[str, Any]]]:
@@ -275,6 +286,18 @@ def discover_projects(projects_path: str | Path | None = None) -> list[tuple[Pat
         projects.append((current, metadata))
         # A CreativeOS project owns its descendants; do not list nested folders twice.
         dirs[:] = []
+
+    if root.resolve() == Path(PROJECTS_PATH).resolve():
+        for path in external_project_paths():
+            if path.resolve() != path or path.is_relative_to(root.resolve()):
+                continue
+            meta_path = path / ".project_meta.json"
+            try:
+                metadata = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+                if isinstance(metadata, dict):
+                    projects.append((path, metadata))
+            except (OSError, ValueError):
+                continue
     return projects
 
 

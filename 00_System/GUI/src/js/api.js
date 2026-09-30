@@ -230,6 +230,8 @@ export const api = {
     method: "POST",
   }),
 
+  createCurrentExportMonth: () => request("/exports/month-folder", { method: "POST" }),
+
   // Storage & Reclaim
   getStorage: () => request("/storage"),
   refreshStorage: async () => {

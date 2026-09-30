@@ -132,18 +132,22 @@ export async function renderSettings(container) {
     const pathsContainer = document.getElementById("paths-list-container");
     if (!pathsContainer) return;
     const paths = configData?.paths || {};
+    const editablePaths = Object.fromEntries(
+      Object.entries(paths).filter(([key]) => !["root_path", "templates_path"].includes(key))
+    );
 
     if (isEditingPaths) {
       pathsContainer.innerHTML = `
         <form id="edit-paths-form" class="studio-form" style="background: var(--surface-bg-card); padding: 1.25rem; border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
           <div style="display: flex; flex-direction: column; gap: 1rem;">
-            ${Object.entries(paths).map(([key, info]) => `
+            ${Object.entries(editablePaths).map(([key, info]) => `
               <div class="form-group">
                 <label class="form-label font-mono" for="path-input-${key}" style="text-transform: none;">${key}</label>
                 <input type="text" id="path-input-${key}" name="${key}" class="form-input font-mono" value="${info.path || ''}" required />
               </div>
             `).join("")}
 
+            <p class="form-hint">The system root and templates path are read-only here. Use <code>cos config edit</code> to change them.</p>
             <div class="form-group" style="padding: 0.75rem 1rem; border-radius: var(--radius-sm); background: var(--bg-app); border: 1px dashed var(--border-subtle); margin-top: 0.5rem;">
               <label class="checkbox-label" style="display: flex; align-items: flex-start; gap: 0.65rem; cursor: pointer;">
                 <input type="checkbox" id="migrate-files-check" style="margin-top: 0.2rem; accent-color: var(--color-primary); width: 15px; height: 15px;" />
@@ -177,7 +181,7 @@ export async function renderSettings(container) {
         e.preventDefault();
         const form = e.target;
         const pathsMap = {};
-        Object.keys(paths).forEach(key => {
+        Object.keys(editablePaths).forEach(key => {
           const input = form.querySelector(`[name="${key}"]`);
           if (input) pathsMap[key] = input.value.trim();
         });
