@@ -259,9 +259,6 @@ def external_project_paths() -> list[Path]:
 def discover_projects(projects_path: str | Path | None = None) -> list[tuple[Path, dict[str, Any]]]:
     """Return initialized project roots below the configured projects directory."""
     root = Path(projects_path or PROJECTS_PATH)
-    if not root.is_dir():
-        return []
-
     projects: list[tuple[Path, dict[str, Any]]] = []
     for current_root, dirs, files in os.walk(root, topdown=True, followlinks=False):
         current = Path(current_root)

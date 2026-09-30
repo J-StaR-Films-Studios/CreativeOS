@@ -778,8 +778,8 @@ def init_project(req: InitProjectRequest) -> dict[str, Any]:
             relative = Path(*relative.parts[1:])
         target_path = (Path(PROJECTS_PATH) / relative).resolve()
     outside_projects = not target_path.is_relative_to(Path(PROJECTS_PATH).resolve())
-    if outside_projects and req.confirm_external and submitted.is_absolute():
-        # Confirmation grants only this project folder, never its parent or system folders.
+    if outside_projects:
+        # Validate the resolved target, including relative paths through allowed mounts.
         system_dirs = [Path(os.environ[key]).resolve() for key in (
             "SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"
         ) if os.environ.get(key)]
@@ -788,7 +788,7 @@ def init_project(req: InitProjectRequest) -> dict[str, Any]:
             for directory in system_dirs
         ):
             raise HTTPException(status_code=403, detail="Cannot adopt a protected system directory")
-    else:
+    if not (outside_projects and req.confirm_external and submitted.is_absolute()):
         target_path = _check_path_allowed(target_path)
 
     if _is_allowed_root(target_path):
@@ -823,21 +823,26 @@ def init_project(req: InitProjectRequest) -> dict[str, Any]:
         try:
             with open(meta_file, "r", encoding="utf-8-sig") as f:
                 existing_meta = json.load(f)
-            if outside_projects:
+        except (OSError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=f"Cannot read existing project metadata: {e}") from e
+        if not isinstance(existing_meta, dict):
+            raise HTTPException(status_code=400, detail="Existing project metadata must be an object")
+        if outside_projects:
+            try:
                 _save_external_projects([*external_project_paths(), target_path])
-                try:
-                    update_project_in_storage_index(target_path, metadata=existing_meta, projects_path=PROJECTS_PATH)
-                except Exception:
-                    pass
-                _invalidate_server_cache()
-            return {
-                "status": "success",
-                "message": f"Folder is already an initialized project: '{existing_meta.get('name', target_path.name)}'",
-                "project": existing_meta,
-                "path": str(target_path),
-            }
-        except Exception:
-            pass
+            except OSError as e:
+                raise HTTPException(status_code=500, detail=f"Could not register existing project: {e}") from e
+            try:
+                update_project_in_storage_index(target_path, metadata=existing_meta, projects_path=PROJECTS_PATH)
+            except Exception:
+                pass
+            _invalidate_server_cache()
+        return {
+            "status": "success",
+            "message": f"Folder is already an initialized project: '{existing_meta.get('name', target_path.name)}'",
+            "project": existing_meta,
+            "path": str(target_path),
+        }
 
     smart_ts = get_smart_date(str(target_path))
     date_str = datetime.datetime.fromtimestamp(smart_ts).strftime("%Y-%m-%d")

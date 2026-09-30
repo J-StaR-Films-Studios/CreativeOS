@@ -135,3 +135,68 @@ def test_failed_migration_preserves_saved_and_loaded_configuration(workspace, mo
     assert config_path.read_text(encoding="utf-8") == before
     assert config._load_config()["vault_path"] == str(old_vault)
     assert (old_vault / "note.md").exists()
+
+
+def test_registration_failure_preserves_existing_project_metadata(workspace, monkeypatch):
+    client, root, _, _ = workspace
+    project = root / "Outside" / "Existing"
+    project.mkdir(parents=True)
+    metadata = project / ".project_meta.json"
+    original = json.dumps({"name": "Original", "description": "Keep this", "custom": {"key": 42}})
+    metadata.write_text(original, encoding="utf-8")
+
+    def fail_save(paths):
+        raise PermissionError("config is read-only")
+
+    monkeypatch.setattr(api, "_save_external_projects", fail_save)
+    response = client.post("/api/projects/init", json={
+        "path": str(project), "confirm_external": True, "name": "Must not overwrite",
+    })
+    assert response.status_code == 500
+    assert metadata.read_text(encoding="utf-8") == original
+    assert not (project / "00_Notes").exists()
+
+
+@pytest.mark.parametrize("content", ["broken JSON", "[]"])
+def test_adoption_does_not_overwrite_invalid_existing_metadata(workspace, content):
+    client, root, _, _ = workspace
+    project = root / "Outside" / "Existing"
+    project.mkdir(parents=True)
+    metadata = project / ".project_meta.json"
+    metadata.write_text(content, encoding="utf-8")
+    response = client.post("/api/projects/init", json={
+        "path": str(project), "confirm_external": True,
+    })
+    assert response.status_code == 400
+    assert metadata.read_text(encoding="utf-8") == content
+
+
+def test_relative_adoption_cannot_bypass_system_directory_protection(workspace, monkeypatch):
+    client, root, _, _ = workspace
+    system = root / "Windows"
+    target = system / "System32"
+    target.mkdir(parents=True)
+    monkeypatch.setenv("SystemRoot", str(system))
+    monkeypatch.setattr(api, "_get_allowed_roots", lambda: [root.resolve()])
+    for submitted in (str(target), "../Windows/System32"):
+        response = client.post("/api/projects/init", json={
+            "path": submitted, "confirm_external": True,
+        })
+        assert response.status_code == 403
+    assert not (target / ".project_meta.json").exists()
+
+
+def test_external_projects_stay_visible_without_projects_directory(workspace):
+    client, root, projects, _ = workspace
+    project = root / "Outside" / "Available"
+    project.mkdir(parents=True)
+    assert client.post("/api/projects/init", json={
+        "path": str(project), "confirm_external": True,
+    }).status_code == 200
+    projects.rename(root / "DisconnectedProjects")
+    response = client.get("/api/projects", params={"nocache": True})
+    assert response.status_code == 200
+    assert str(project) in {entry["path"] for entry in response.json()}
+    assert project in {path for path, _ in storage.discover_projects()}
+    # Archive or other explicit search roots must not include the external registry.
+    assert storage.discover_projects(root / "MissingArchive") == []
